@@ -1,0 +1,226 @@
+---
+title: Streaming
+description: Understanding stream events from the Server SDK.
+---
+
+# Streaming
+
+All Octavus responses stream in real-time using Server-Sent Events (SSE). This enables responsive UX with incremental updates.
+
+## Stream Response
+
+When you trigger an action, you get an async generator of parsed events:
+
+```typescript
+import { toSSEStream } from '@octavus/server-sdk';
+
+// trigger() returns an async generator of StreamEvent
+const events = session.trigger('user-message', {
+  USER_MESSAGE: 'Hello!',
+});
+
+// For HTTP endpoints, convert to SSE stream
+return new Response(toSSEStream(events), {
+  headers: {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  },
+});
+
+// For sockets, iterate events directly
+for await (const event of events) {
+  conn.write(JSON.stringify(event));
+}
+```
+
+## Event Types
+
+The stream emits various event types for lifecycle, text, reasoning, and tool interactions.
+
+### Lifecycle Events
+
+```typescript
+// Stream started
+{ type: 'start', messageId: '...' }
+
+// Stream completed
+{ type: 'finish', finishReason: 'stop' }
+
+// Possible finish reasons:
+// - 'stop': Normal completion
+// - 'tool-calls': Waiting for tool execution (handled by SDK)
+// - 'length': Max tokens reached
+// - 'content-filter': Content filtered
+// - 'error': Error occurred
+// - 'other': Other reason
+
+// Error event (see Error Handling docs for full structure)
+{ type: 'error', errorType: 'internal_error', message: 'Something went wrong', source: 'platform', retryable: false }
+```
+
+### Block Events
+
+Track execution progress:
+
+```typescript
+// Block started
+{ type: 'block-start', blockId: '...', blockName: 'Respond to user', blockType: 'next-message', display: 'stream', thread: 'main' }
+
+// Block completed
+{ type: 'block-end', blockId: '...', summary: 'Generated response' }
+```
+
+### Text Events
+
+Streaming text content:
+
+```typescript
+// Text generation started
+{ type: 'text-start', id: '...' }
+
+// Incremental text (most common event)
+{ type: 'text-delta', id: '...', delta: 'Hello' }
+{ type: 'text-delta', id: '...', delta: '!' }
+{ type: 'text-delta', id: '...', delta: ' How' }
+{ type: 'text-delta', id: '...', delta: ' can' }
+{ type: 'text-delta', id: '...', delta: ' I' }
+{ type: 'text-delta', id: '...', delta: ' help?' }
+
+// Text generation ended
+{ type: 'text-end', id: '...' }
+```
+
+### Reasoning Events
+
+Extended reasoning (for supported models like Claude):
+
+```typescript
+// Reasoning started
+{ type: 'reasoning-start', id: '...' }
+
+// Reasoning content
+{ type: 'reasoning-delta', id: '...', delta: 'Let me analyze this request...' }
+
+// Reasoning ended
+{ type: 'reasoning-end', id: '...' }
+```
+
+### Tool Events
+
+Tool call lifecycle:
+
+```typescript
+// Tool input started
+{ type: 'tool-input-start', toolCallId: '...', toolName: 'get-user-account', title: 'Looking up account' }
+
+// Tool input/arguments streaming
+{ type: 'tool-input-delta', toolCallId: '...', inputTextDelta: '{"userId":"user-123"}' }
+
+// Tool input streaming ended
+{ type: 'tool-input-end', toolCallId: '...' }
+
+// Tool input is complete and available
+{ type: 'tool-input-available', toolCallId: '...', toolName: 'get-user-account', input: { userId: 'user-123' } }
+
+// Tool output available (success)
+{ type: 'tool-output-available', toolCallId: '...', output: { name: 'Demo User', email: '...' } }
+
+// Tool output error (failure)
+{ type: 'tool-output-error', toolCallId: '...', error: 'User not found' }
+```
+
+### Resource Events
+
+Resource updates:
+
+```typescript
+{ type: 'resource-update', name: 'CONVERSATION_SUMMARY', value: 'User asked about...' }
+```
+
+## Display Modes
+
+Each block/tool specifies how it should appear to users:
+
+| Mode          | Description                         |
+| ------------- | ----------------------------------- |
+| `hidden`      | Not shown to user (background work) |
+| `name`        | Shows block/tool name               |
+| `description` | Shows description text              |
+| `stream`      | Streams content to chat             |
+
+**Note**: Hidden events are filtered before reaching the client SDK. Your frontend only sees user-facing events.
+
+## Stream Event Type
+
+```typescript
+type StreamEvent =
+  // Lifecycle
+  | StartEvent
+  | FinishEvent
+  | ErrorEvent
+  // Text
+  | TextStartEvent
+  | TextDeltaEvent
+  | TextEndEvent
+  // Reasoning
+  | ReasoningStartEvent
+  | ReasoningDeltaEvent
+  | ReasoningEndEvent
+  // Tool Input/Output
+  | ToolInputStartEvent
+  | ToolInputDeltaEvent
+  | ToolInputEndEvent
+  | ToolInputAvailableEvent
+  | ToolOutputAvailableEvent
+  | ToolOutputErrorEvent
+  // Octavus-Specific
+  | BlockStartEvent
+  | BlockEndEvent
+  | ResourceUpdateEvent
+  | ToolRequestEvent;
+```
+
+## Error Events
+
+Errors are emitted as structured events with type classification:
+
+```typescript
+{
+  type: 'error',
+  errorType: 'rate_limit_error',     // Error classification
+  message: 'Rate limit exceeded',     // Human-readable message
+  source: 'provider',                 // 'platform' | 'provider' | 'tool'
+  retryable: true,                    // Whether retry is possible
+  retryAfter: 60,                     // Seconds to wait (rate limits)
+  code: 'ANTHROPIC_429',              // Machine-readable code
+  provider: {                         // Provider details (when applicable)
+    name: 'anthropic',
+    statusCode: 429,
+    requestId: 'req_...'
+  }
+}
+```
+
+### Error Types
+
+| Type                   | Description           |
+| ---------------------- | --------------------- |
+| `rate_limit_error`     | Too many requests     |
+| `authentication_error` | Invalid API key       |
+| `provider_error`       | LLM provider issue    |
+| `provider_overloaded`  | Provider at capacity  |
+| `tool_error`           | Tool execution failed |
+| `internal_error`       | Platform error        |
+
+### Tool Errors
+
+Tool errors are captured per-tool and don't stop the stream:
+
+```typescript
+{ type: 'tool-output-error', toolCallId: '...', error: 'Handler threw exception' }
+```
+
+The stream always ends with either `finish` or `error`.
+
+For client-side error handling patterns, see [Error Handling](/docs/client-sdk/error-handling).

@@ -1,0 +1,54 @@
+{
+  "name": "@octavus/cli",
+  "version": "0.2.0",
+  "description": "CLI for validating and syncing Octavus agent definitions",
+  "license": "MIT",
+  "author": "Octavus AI <dev@octavus.ai>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/octavus-ai/js-sdk.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://octavus.ai",
+  "bugs": {
+    "url": "https://github.com/octavus-ai/js-sdk/issues"
+  },
+  "keywords": [
+    "octavus",
+    "ai",
+    "agents",
+    "cli",
+    "sync",
+    "validate"
+  ],
+  "type": "module",
+  "bin": {
+    "octavus": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "lint": "eslint src/ --max-warnings 0",
+    "lint:fix": "eslint src/ --max-warnings 0 --fix",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist .turbo"
+  },
+  "dependencies": {
+    "commander": "^13.1.0",
+    "dotenv": "^16.6.1",
+    "yaml": "^2.8.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3"
+  }
+}

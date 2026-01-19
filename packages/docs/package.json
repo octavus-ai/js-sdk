@@ -1,0 +1,61 @@
+{
+  "name": "@octavus/docs",
+  "version": "0.2.0",
+  "description": "Documentation content for Octavus SDKs",
+  "license": "MIT",
+  "author": "Octavus AI <dev@octavus.ai>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/octavus-ai/js-sdk.git",
+    "directory": "packages/docs"
+  },
+  "homepage": "https://octavus.ai",
+  "bugs": {
+    "url": "https://github.com/octavus-ai/js-sdk/issues"
+  },
+  "keywords": [
+    "octavus",
+    "ai",
+    "agents",
+    "documentation",
+    "docs"
+  ],
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./content": {
+      "import": "./dist/content.js",
+      "types": "./dist/content.d.ts"
+    },
+    "./search": {
+      "import": "./dist/search.js",
+      "types": "./dist/search.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "content"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "prebuild": "tsx scripts/build.ts",
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "minisearch": "^7.1.1"
+  },
+  "devDependencies": {
+    "glob": "^11.0.2",
+    "gray-matter": "^4.0.3",
+    "tsup": "^8.5.0",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,128 @@
+export { AppError, NotFoundError, ValidationError, ConflictError, ForbiddenError } from './errors';
+
+// Structured error types for streaming
+export type {
+  ErrorType,
+  ErrorSource,
+  ProviderErrorInfo,
+  ToolErrorInfo,
+  OctavusErrorOptions,
+} from './errors/types';
+
+export {
+  OctavusError,
+  isRateLimitError,
+  isAuthenticationError,
+  isProviderError,
+  isToolError,
+  isRetryableError,
+  isValidationError,
+} from './errors/octavus-error';
+
+// Error event helpers
+export type { CreateErrorEventOptions } from './errors/helpers';
+export {
+  createErrorEvent,
+  errorToStreamEvent,
+  createInternalErrorEvent,
+  createApiErrorEvent,
+} from './errors/helpers';
+
+export { generateId, isAbortError } from './utils';
+export { MAIN_THREAD, resolveThread, isMainThread, threadForPart, isOtherThread } from './thread';
+
+export { isFileReference, isFileReferenceArray } from './stream/schemas';
+
+export type {
+  // Common
+  DisplayMode,
+  ToolHandler,
+  ToolHandlers,
+  ResourceUpdateHandler,
+  FileReference,
+  MessageRole,
+  ToolCallStatus,
+  ToolCallInfo,
+  FinishReason,
+  // Lifecycle Events
+  StartEvent,
+  FinishEvent,
+  ErrorEvent,
+  // Text Events
+  TextStartEvent,
+  TextDeltaEvent,
+  TextEndEvent,
+  // Reasoning Events
+  ReasoningStartEvent,
+  ReasoningDeltaEvent,
+  ReasoningEndEvent,
+  // Tool Events
+  ToolInputStartEvent,
+  ToolInputDeltaEvent,
+  ToolInputEndEvent,
+  ToolInputAvailableEvent,
+  ToolOutputAvailableEvent,
+  ToolOutputErrorEvent,
+  // Source Events (aligned with Vercel AI SDK)
+  SourceUrlEvent,
+  SourceDocumentEvent,
+  SourceEvent,
+  // Octavus-Specific
+  BlockStartEvent,
+  BlockEndEvent,
+  ResourceUpdateEvent,
+  PendingToolCall,
+  ToolRequestEvent,
+  ToolResult,
+  // File Events (skill execution)
+  GeneratedFile,
+  FileAvailableEvent,
+  // Union
+  StreamEvent,
+  // Internal Message Types
+  MessagePartType,
+  SourceUrlInfo,
+  SourceDocumentInfo,
+  SourceInfo,
+  FileInfo,
+  ObjectInfo,
+  MessagePart,
+  ChatMessage,
+  // UI Message Types (for client SDK and consumer apps)
+  UIMessageStatus,
+  UIPartStatus,
+  UITextPart,
+  UIReasoningPart,
+  UIToolCallStatus,
+  UIToolCallPart,
+  UIOperationStatus,
+  UIOperationPart,
+  UISourceUrlPart,
+  UISourceDocumentPart,
+  UISourcePart,
+  UIFilePart,
+  UIObjectStatus,
+  UIObjectPart,
+  UIMessagePart,
+  UIMessage,
+} from './stream/types';
+
+export {
+  // Internal schemas
+  chatMessageSchema,
+  toolResultSchema,
+  fileReferenceSchema,
+  safeParseStreamEvent,
+  // UI schemas
+  uiMessageSchema,
+  uiMessagePartSchema,
+  safeParseUIMessage,
+  safeParseUIMessages,
+} from './stream/schemas';
+
+export {
+  OCTAVUS_SKILL_TOOLS,
+  isOctavusSkillTool,
+  getSkillSlugFromToolCall,
+  type OctavusSkillToolName,
+} from './skills';
