@@ -243,12 +243,10 @@ export class AgentSession {
                 continue;
               }
 
-              // Handle resource updates
               if (event.type === 'resource-update') {
                 this.handleResourceUpdate(event.name, event.value);
               }
 
-              // Yield all other events to the consumer
               yield event;
             } catch {
               // Skip malformed JSON
@@ -265,11 +263,9 @@ export class AgentSession {
 
       // If we have pending tool calls, split into server and client tools
       if (pendingToolCalls && pendingToolCalls.length > 0) {
-        // Split tools by handler presence
         const serverTools = pendingToolCalls.filter((tc) => this.toolHandlers[tc.toolName]);
         const clientTools = pendingToolCalls.filter((tc) => !this.toolHandlers[tc.toolName]);
 
-        // Execute server tools
         const serverResults = await Promise.all(
           serverTools.map(async (tc): Promise<ToolResult> => {
             // Handler is guaranteed to exist since we filtered by handler presence

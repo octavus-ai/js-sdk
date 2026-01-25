@@ -697,11 +697,9 @@ export class OctavusChat {
       return;
     }
 
-    // Remove from pending
     this._pendingClientTools.delete(toolCallId);
     this.updatePendingClientToolsCache();
 
-    // Add to completed results (include continuation fields)
     const toolResult: ToolResult = {
       toolCallId,
       toolName: pendingTool.toolName,
@@ -712,16 +710,13 @@ export class OctavusChat {
     };
     this._completedToolResults.push(toolResult);
 
-    // Emit tool output event for UI update
     if (error) {
       this.emitToolOutputError(toolCallId, error);
     } else {
       this.emitToolOutputAvailable(toolCallId, result);
     }
 
-    // Check if all pending tools are resolved
     if (this._pendingClientTools.size === 0) {
-      // Continue with collected results
       void this.continueWithClientToolResults();
     }
 
@@ -734,7 +729,6 @@ export class OctavusChat {
       return;
     }
 
-    // Cancel any pending client tool execution
     this._clientToolAbortController?.abort();
     this._clientToolAbortController = null;
     this._pendingClientTools.clear();
@@ -1323,7 +1317,6 @@ export class OctavusChat {
         });
         this.updatePendingClientToolsCache();
 
-        // Update tool status to awaiting input
         const toolPartIndex = state.parts.findIndex(
           (p: UIMessagePart) => p.type === 'tool-call' && p.toolCallId === tc.toolCallId,
         );
@@ -1333,7 +1326,6 @@ export class OctavusChat {
           state.parts[toolPartIndex] = { ...part };
         }
       } else if (handler) {
-        // Execute automatic handler
         try {
           const result = await handler(tc.args, {
             toolCallId: tc.toolCallId,
@@ -1349,7 +1341,6 @@ export class OctavusChat {
             blockIndex: tc.blockIndex,
           });
 
-          // Emit tool output for UI
           this.emitToolOutputAvailable(tc.toolCallId, result);
         } catch (err) {
           const errorMessage = err instanceof Error ? err.message : 'Tool execution failed';
@@ -1361,7 +1352,6 @@ export class OctavusChat {
             blockIndex: tc.blockIndex,
           });
 
-          // Emit tool error for UI
           this.emitToolOutputError(tc.toolCallId, errorMessage);
         }
       } else {

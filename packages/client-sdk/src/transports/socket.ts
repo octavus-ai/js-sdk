@@ -336,7 +336,6 @@ export function createSocketTransport(options: SocketTransportOptions): SocketTr
      * Resets streaming state and yields events until finish/error.
      */
     async *continuationEvents(): AsyncIterable<StreamEvent> {
-      // Reset streaming state to receive continuation events
       eventQueue = [];
       isStreaming = true;
 
