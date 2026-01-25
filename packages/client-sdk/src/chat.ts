@@ -737,6 +737,8 @@ export class OctavusChat {
     this._pendingClientTools.clear();
     this._completedToolResults = [];
     this._serverToolResults = [];
+    this._lastTriggerName = null;
+    this._lastTriggerInput = undefined;
     this.updatePendingClientToolsCache();
 
     this.transport.stop();
@@ -1322,6 +1324,10 @@ export class OctavusChat {
 
   /**
    * Handle client tool request event.
+   *
+   * IMPORTANT: Interactive tools must be registered synchronously (before any await)
+   * to avoid a race condition where the finish event is processed before tools are added
+   * to _pendingClientTools.
    */
   private async handleClientToolRequest(
     toolCalls: PendingToolCall[],
@@ -1329,11 +1335,11 @@ export class OctavusChat {
   ): Promise<void> {
     this._clientToolAbortController = new AbortController();
 
+    // FIRST PASS: Register all interactive tools synchronously (no await)
+    // This ensures _pendingClientTools is populated before finish event is processed
     for (const tc of toolCalls) {
       const handler = this.options.clientTools?.[tc.toolName];
-
       if (handler === 'interactive') {
-        // Mark as pending interactive tool (preserve continuation fields)
         this._pendingClientTools.set(tc.toolCallId, {
           toolCallId: tc.toolCallId,
           toolName: tc.toolName,
@@ -1342,8 +1348,18 @@ export class OctavusChat {
           outputVariable: tc.outputVariable,
           blockIndex: tc.blockIndex,
         });
-        this.updatePendingClientToolsCache();
+      }
+    }
+    if (this._pendingClientTools.size > 0) {
+      this.updatePendingClientToolsCache();
+    }
 
+    // SECOND PASS: Execute automatic handlers and handle missing handlers
+    for (const tc of toolCalls) {
+      const handler = this.options.clientTools?.[tc.toolName];
+
+      if (handler === 'interactive') {
+        // Already registered above, just update UI state
         const toolPartIndex = state.parts.findIndex(
           (p: UIMessagePart) => p.type === 'tool-call' && p.toolCallId === tc.toolCallId,
         );
