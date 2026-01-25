@@ -70,6 +70,12 @@ export class AgentSession {
   private toolHandlers: ToolHandlers;
   private resourceMap: Map<string, Resource>;
 
+  // Continuation state - stored after each trigger for easy continuation
+  private _lastTriggerName: string | null = null;
+  private _lastTriggerInput: Record<string, unknown> | undefined = undefined;
+  // Server tool results from mixed server+client tool scenarios (for WebSocket continuation)
+  private _pendingServerToolResults: ToolResult[] = [];
+
   constructor(sessionConfig: SessionConfig) {
     this.sessionId = sessionConfig.sessionId;
     this.config = sessionConfig.config;
@@ -99,21 +105,24 @@ export class AgentSession {
    * @param triggerInput - Input parameters for the trigger
    * @param options - Optional configuration including abort signal and client tool results
    *
-   * @example
+   * @example WebSocket: iterate events directly
    * ```typescript
-   * // For sockets: iterate events directly
    * for await (const event of session.trigger('user-message', input)) {
    *   conn.write(JSON.stringify(event));
    * }
+   * ```
    *
-   * // For HTTP: convert to SSE stream with abort support
+   * @example HTTP: convert to SSE stream
+   * ```typescript
    * const events = session.trigger('user-message', input, { signal: request.signal });
-   * return new Response(toSSEStream(events), {
-   *   headers: { 'Content-Type': 'text/event-stream' },
-   * });
+   * return new Response(toSSEStream(events));
+   * ```
    *
-   * // Continue with client tool results
-   * const events = session.trigger('user-message', input, {
+   * @example Continue with client tool results
+   * ```typescript
+   * // For WebSocket, use continueWithToolResults() instead
+   * // For HTTP, pass clientToolResults with trigger context from request
+   * const events = session.trigger(triggerName, input, {
    *   clientToolResults: [{ toolCallId: '...', result: { rating: 5 } }],
    * });
    * ```
@@ -123,12 +132,21 @@ export class AgentSession {
     triggerInput?: Record<string, unknown>,
     options?: TriggerOptions,
   ): AsyncGenerator<StreamEvent> {
+    // Store trigger info for potential continuation
+    this._lastTriggerName = triggerName;
+    this._lastTriggerInput = triggerInput;
+
     let toolResults: ToolResult[] | undefined;
     let continueLoop = true;
 
-    // If client tool results are provided, use them as initial tool results
+    // If client tool results are provided, combine with any pending server results
     if (options?.clientToolResults && options.clientToolResults.length > 0) {
-      toolResults = options.clientToolResults;
+      // Combine server results (from mixed tools scenario) with client results
+      toolResults = [...this._pendingServerToolResults, ...options.clientToolResults];
+      this._pendingServerToolResults = []; // Clear after use
+    } else {
+      // Clear any stale pending results when starting a fresh trigger
+      this._pendingServerToolResults = [];
     }
 
     while (continueLoop) {
@@ -302,7 +320,15 @@ export class AgentSession {
 
         // If there are client tools, emit client-tool-request and stop the loop
         if (clientTools.length > 0) {
-          yield { type: 'client-tool-request', toolCalls: clientTools };
+          // Store server results for WebSocket continuation (same instance)
+          this._pendingServerToolResults = serverResults;
+
+          // Include server results in event for HTTP continuation (stateless)
+          yield {
+            type: 'client-tool-request',
+            toolCalls: clientTools,
+            serverToolResults: serverResults.length > 0 ? serverResults : undefined,
+          };
           yield { type: 'finish', finishReason: 'client-tool-calls' };
           continueLoop = false;
         } else {
@@ -314,6 +340,46 @@ export class AgentSession {
         continueLoop = false;
       }
     }
+  }
+
+  /**
+   * Continue execution with client tool results.
+   *
+   * Uses the stored trigger context from the previous call to continue
+   * agent execution after client-side tool handling completes.
+   *
+   * **Important:** Only works for **WebSocket/long-lived connections** where the same
+   * AgentSession instance handles multiple messages. For serverless HTTP endpoints,
+   * use `trigger(triggerName, input, { clientToolResults })` with context from the request.
+   *
+   * @param results - Tool results from client-side execution
+   * @param options - Optional configuration including abort signal
+   *
+   * @example
+   * ```typescript
+   * // WebSocket handler
+   * async function handleClientToolResults(msg: ClientToolResultsMessage) {
+   *   const events = session.continueWithToolResults(msg.results);
+   *   await streamToClient(events);
+   * }
+   * ```
+   *
+   * @throws Error if no previous trigger context exists
+   */
+  async *continueWithToolResults(
+    results: ToolResult[],
+    options?: { signal?: AbortSignal },
+  ): AsyncGenerator<StreamEvent> {
+    if (this._lastTriggerName === null) {
+      throw new Error(
+        'No trigger context available. Call trigger() first before continuing with tool results.',
+      );
+    }
+
+    yield* this.trigger(this._lastTriggerName, this._lastTriggerInput, {
+      signal: options?.signal,
+      clientToolResults: results,
+    });
   }
 
   getSessionId(): string {

@@ -402,6 +402,8 @@ export class OctavusChat {
   private _clientToolAbortController: AbortController | null = null;
   private _lastTriggerName: string | null = null;
   private _lastTriggerInput: Record<string, unknown> | undefined = undefined;
+  // Server tool results from mixed server+client tools (for continuation)
+  private _serverToolResults: ToolResult[] = [];
 
   // Listener sets for reactive frameworks
   private listeners = new Set<Listener>();
@@ -567,6 +569,7 @@ export class OctavusChat {
     // Clear any previous client tool state
     this._pendingClientTools.clear();
     this._completedToolResults = [];
+    this._serverToolResults = [];
     this.updatePendingClientToolsCache();
 
     try {
@@ -733,6 +736,7 @@ export class OctavusChat {
     this._clientToolAbortController = null;
     this._pendingClientTools.clear();
     this._completedToolResults = [];
+    this._serverToolResults = [];
     this.updatePendingClientToolsCache();
 
     this.transport.stop();
@@ -1179,6 +1183,8 @@ export class OctavusChat {
         break;
 
       case 'client-tool-request':
+        // Store server tool results for continuation (mixed tools scenario)
+        this._serverToolResults = event.serverToolResults ?? [];
         // Handle client-side tool execution
         void this.handleClientToolRequest(event.toolCalls, state);
         break;
@@ -1245,18 +1251,35 @@ export class OctavusChat {
    */
   private async continueWithClientToolResults(): Promise<void> {
     if (this._completedToolResults.length === 0) return;
-    if (this._lastTriggerName === null) return;
 
-    const results = [...this._completedToolResults];
+    if (this._lastTriggerName === null) {
+      // Context lost - this can happen if the page was refreshed while client tools were pending
+      this.setStatus('error');
+      this.setError(
+        new OctavusError({
+          errorType: 'internal_error',
+          message:
+            'Cannot continue execution: trigger context was lost. ' +
+            'This can happen if the page was refreshed while client tools were pending.',
+          source: 'client',
+          retryable: false,
+        }),
+      );
+      return;
+    }
+
+    const clientResults = [...this._completedToolResults];
     this._completedToolResults = [];
 
     this.setStatus('streaming');
 
     try {
-      // For socket transport, send results and consume continuation events
+      // For socket transport, send only client results
+      // Server-SDK will combine with stored server results
       if (isSocketTransport(this.transport)) {
         const socketTransport = this.transport;
-        socketTransport.sendClientToolResults(results);
+        socketTransport.sendClientToolResults(clientResults);
+        this._serverToolResults = []; // Clear after use
 
         // Consume continuation events from the server
         for await (const event of socketTransport.continuationEvents()) {
@@ -1266,11 +1289,15 @@ export class OctavusChat {
         return;
       }
 
+      // For HTTP transport, include server results (stateless - server doesn't store them)
+      const allResults = [...this._serverToolResults, ...clientResults];
+      this._serverToolResults = [];
+
       // For HTTP transport, make a new trigger request with clientToolResults
       for await (const event of this.transport.trigger(
         this._lastTriggerName,
         this._lastTriggerInput,
-        { clientToolResults: results },
+        { clientToolResults: allResults },
       )) {
         if (this.streamingState === null) break;
         this.handleStreamEvent(event, this.streamingState);

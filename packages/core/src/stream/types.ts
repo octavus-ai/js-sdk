@@ -328,6 +328,13 @@ export interface ToolRequestEvent {
 export interface ClientToolRequestEvent {
   type: 'client-tool-request';
   toolCalls: PendingToolCall[];
+  /**
+   * Server tool results already executed in this round.
+   * When mixed server+client tools are requested, the server executes its tools
+   * first and includes results here. Client must include these when continuing.
+   * @internal Used for continuation context
+   */
+  serverToolResults?: ToolResult[];
 }
 
 /** Result from tool execution (consumer's response to tool-request) */

@@ -229,6 +229,15 @@ export const pendingToolCallSchema = z.object({
   blockIndex: z.number().optional(),
 });
 
+export const toolResultSchema = z.object({
+  toolCallId: z.string(),
+  toolName: z.string().optional(),
+  result: z.unknown().optional(),
+  error: z.string().optional(),
+  outputVariable: z.string().optional(),
+  blockIndex: z.number().optional(),
+});
+
 export const toolRequestEventSchema = z.object({
   type: z.literal('tool-request'),
   toolCalls: z.array(pendingToolCallSchema),
@@ -237,15 +246,7 @@ export const toolRequestEventSchema = z.object({
 export const clientToolRequestEventSchema = z.object({
   type: z.literal('client-tool-request'),
   toolCalls: z.array(pendingToolCallSchema),
-});
-
-export const toolResultSchema = z.object({
-  toolCallId: z.string(),
-  toolName: z.string().optional(),
-  result: z.unknown().optional(),
-  error: z.string().optional(),
-  outputVariable: z.string().optional(),
-  blockIndex: z.number().optional(),
+  serverToolResults: z.array(toolResultSchema).optional(),
 });
 
 // --------------------------------- File --------------------------------------
