@@ -22,7 +22,10 @@ export {
   type ConnectionState,
   type ConnectionStateListener,
   type HttpTransportOptions,
-  type TriggerRequestOptions,
+  type HttpRequestOptions,
+  type HttpRequest,
+  type TriggerRequest,
+  type ContinueRequest,
   type SocketLike,
   type SocketTransportOptions,
 } from './transports';

@@ -313,9 +313,9 @@ export function createSocketTransport(options: SocketTransportOptions): SocketTr
     /**
      * Continue execution with tool results after client-side tool handling.
      * @param executionId - The execution ID from the client-tool-request event
-     * @param results - All tool results (server + client) to send
+     * @param toolResults - All tool results (server + client) to send
      */
-    async *continueWithToolResults(executionId: string, results: ToolResult[]) {
+    async *continueWithToolResults(executionId: string, toolResults: ToolResult[]) {
       await ensureConnected();
 
       eventQueue = [];
@@ -323,9 +323,9 @@ export function createSocketTransport(options: SocketTransportOptions): SocketTr
 
       socket!.send(
         JSON.stringify({
-          type: 'client-tool-results',
+          type: 'continue',
           executionId,
-          results,
+          toolResults,
         }),
       );
 

@@ -12,6 +12,27 @@ import { parseApiError } from '@/api-error.js';
 import type { ApiClientConfig } from '@/base-api-client.js';
 import type { Resource } from '@/resource.js';
 
+// =============================================================================
+// Request Types
+// =============================================================================
+
+/** Start a new trigger execution */
+export interface TriggerRequest {
+  type: 'trigger';
+  triggerName: string;
+  input?: Record<string, unknown>;
+}
+
+/** Continue execution after client-side tool handling */
+export interface ContinueRequest {
+  type: 'continue';
+  executionId: string;
+  toolResults: ToolResult[];
+}
+
+/** All request types supported by the session */
+export type SessionRequest = TriggerRequest | ContinueRequest;
+
 /**
  * Converts an async iterable of stream events to an SSE-formatted ReadableStream.
  * Use this when you need to return an SSE response (e.g., HTTP endpoints).
@@ -81,78 +102,42 @@ export class AgentSession {
   }
 
   /**
-   * Trigger an agent action and stream the response as parsed events.
+   * Execute a session request and stream the response.
    *
-   * This method:
-   * 1. POSTs to the platform trigger endpoint
-   * 2. Yields parsed stream events to the consumer
-   * 3. When tool-request event is received:
-   *    - Server tools (with handlers) are executed locally
-   *    - Client tools (without handlers) are forwarded via client-tool-request
-   * 4. If all tools have server handlers: continues execution automatically
-   * 5. If any tools need client handling: yields client-tool-request and finishes
-   * 6. Use `continueWithToolResults()` to resume after client tool handling
+   * This is the unified method that handles both triggers and continuations.
+   * Use this when you want to pass through requests from the client directly.
    *
-   * @param triggerName - The trigger name defined in the agent's protocol
-   * @param triggerInput - Input parameters for the trigger
+   * @param request - The request (check `request.type` for the kind)
    * @param options - Optional configuration including abort signal
    *
-   * @example WebSocket: iterate events directly
+   * @example HTTP route (simple passthrough)
    * ```typescript
-   * for await (const event of session.trigger('user-message', input)) {
-   *   conn.write(JSON.stringify(event));
-   * }
-   * ```
-   *
-   * @example HTTP: convert to SSE stream
-   * ```typescript
-   * const events = session.trigger('user-message', input, { signal: request.signal });
-   * return new Response(toSSEStream(events));
-   * ```
-   */
-  async *trigger(
-    triggerName: string,
-    triggerInput?: Record<string, unknown>,
-    options?: TriggerOptions,
-  ): AsyncGenerator<StreamEvent> {
-    yield* this.executeStream({ triggerName, input: triggerInput }, options?.signal);
-  }
-
-  /**
-   * Continue execution with tool results after client-side tool handling.
-   *
-   * Call this after receiving a `client-tool-request` event and completing
-   * client-side tool execution.
-   *
-   * @param executionId - The execution ID from the client-tool-request event
-   * @param results - All tool results (both server and client). Server results
-   *   are received in the `client-tool-request` event's `serverToolResults` field.
-   * @param options - Optional configuration including abort signal
-   *
-   * @example HTTP route handler
-   * ```typescript
-   * if (body.executionId && body.clientToolResults?.length > 0) {
-   *   const events = session.continueWithToolResults(body.executionId, body.clientToolResults, { signal });
-   *   return new Response(toSSEStream(events));
-   * }
-   * const events = session.trigger(triggerName, input, { signal });
+   * const events = session.execute(body, { signal: request.signal });
    * return new Response(toSSEStream(events));
    * ```
    *
    * @example WebSocket handler
    * ```typescript
-   * function handleClientToolResults(msg: { executionId: string; results: ToolResult[] }) {
-   *   const events = session.continueWithToolResults(msg.executionId, msg.results);
-   *   streamToClient(events);
-   * }
+   * socket.on('message', (data) => {
+   *   const events = session.execute(data);
+   *   for await (const event of events) {
+   *     socket.send(JSON.stringify(event));
+   *   }
+   * });
    * ```
    */
-  async *continueWithToolResults(
-    executionId: string,
-    results: ToolResult[],
-    options?: TriggerOptions,
-  ): AsyncGenerator<StreamEvent> {
-    yield* this.executeStream({ executionId, toolResults: results }, options?.signal);
+  async *execute(request: SessionRequest, options?: TriggerOptions): AsyncGenerator<StreamEvent> {
+    if (request.type === 'continue') {
+      yield* this.executeStream(
+        { executionId: request.executionId, toolResults: request.toolResults },
+        options?.signal,
+      );
+    } else {
+      yield* this.executeStream(
+        { triggerName: request.triggerName, input: request.input },
+        options?.signal,
+      );
+    }
   }
 
   getSessionId(): string {
