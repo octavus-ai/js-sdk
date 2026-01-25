@@ -59,8 +59,6 @@ export interface SessionConfig {
 export interface TriggerOptions {
   /** Abort signal to cancel the trigger execution */
   signal?: AbortSignal;
-  /** Results from client-side tool execution (for continuation) */
-  clientToolResults?: ToolResult[];
 }
 
 /** Handles streaming and tool continuation for agent sessions */
@@ -69,12 +67,6 @@ export class AgentSession {
   private config: ApiClientConfig;
   private toolHandlers: ToolHandlers;
   private resourceMap: Map<string, Resource>;
-
-  // Continuation state - stored after each trigger for easy continuation
-  private _lastTriggerName: string | null = null;
-  private _lastTriggerInput: Record<string, unknown> | undefined = undefined;
-  // Server tool results from mixed server+client tool scenarios (for WebSocket continuation)
-  private _pendingServerToolResults: ToolResult[] = [];
 
   constructor(sessionConfig: SessionConfig) {
     this.sessionId = sessionConfig.sessionId;
@@ -97,13 +89,13 @@ export class AgentSession {
    * 3. When tool-request event is received:
    *    - Server tools (with handlers) are executed locally
    *    - Client tools (without handlers) are forwarded via client-tool-request
-   * 4. If all tools have server handlers: POSTs a new request with toolResults to continue
-   * 5. If any tools need client handling: yields client-tool-request and waits for clientToolResults
-   * 6. Repeats until done (no more tool requests)
+   * 4. If all tools have server handlers: continues execution automatically
+   * 5. If any tools need client handling: yields client-tool-request and finishes
+   * 6. Use `continueWithToolResults()` to resume after client tool handling
    *
    * @param triggerName - The trigger name defined in the agent's protocol
    * @param triggerInput - Input parameters for the trigger
-   * @param options - Optional configuration including abort signal and client tool results
+   * @param options - Optional configuration including abort signal
    *
    * @example WebSocket: iterate events directly
    * ```typescript
@@ -117,46 +109,87 @@ export class AgentSession {
    * const events = session.trigger('user-message', input, { signal: request.signal });
    * return new Response(toSSEStream(events));
    * ```
-   *
-   * @example Continue with client tool results
-   * ```typescript
-   * // For WebSocket, use continueWithToolResults() instead
-   * // For HTTP, pass clientToolResults with trigger context from request
-   * const events = session.trigger(triggerName, input, {
-   *   clientToolResults: [{ toolCallId: '...', result: { rating: 5 } }],
-   * });
-   * ```
    */
   async *trigger(
     triggerName: string,
     triggerInput?: Record<string, unknown>,
     options?: TriggerOptions,
   ): AsyncGenerator<StreamEvent> {
-    // Store trigger info for potential continuation
-    this._lastTriggerName = triggerName;
-    this._lastTriggerInput = triggerInput;
+    yield* this.executeStream({ triggerName, input: triggerInput }, options?.signal);
+  }
 
-    let toolResults: ToolResult[] | undefined;
+  /**
+   * Continue execution with tool results after client-side tool handling.
+   *
+   * Call this after receiving a `client-tool-request` event and completing
+   * client-side tool execution.
+   *
+   * @param executionId - The execution ID from the client-tool-request event
+   * @param results - All tool results (both server and client). Server results
+   *   are received in the `client-tool-request` event's `serverToolResults` field.
+   * @param options - Optional configuration including abort signal
+   *
+   * @example HTTP route handler
+   * ```typescript
+   * if (body.executionId && body.clientToolResults?.length > 0) {
+   *   const events = session.continueWithToolResults(body.executionId, body.clientToolResults, { signal });
+   *   return new Response(toSSEStream(events));
+   * }
+   * const events = session.trigger(triggerName, input, { signal });
+   * return new Response(toSSEStream(events));
+   * ```
+   *
+   * @example WebSocket handler
+   * ```typescript
+   * function handleClientToolResults(msg: { executionId: string; results: ToolResult[] }) {
+   *   const events = session.continueWithToolResults(msg.executionId, msg.results);
+   *   streamToClient(events);
+   * }
+   * ```
+   */
+  async *continueWithToolResults(
+    executionId: string,
+    results: ToolResult[],
+    options?: TriggerOptions,
+  ): AsyncGenerator<StreamEvent> {
+    yield* this.executeStream({ executionId, toolResults: results }, options?.signal);
+  }
+
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  /**
+   * Core streaming logic shared by trigger() and continueWithToolResults().
+   */
+  private async *executeStream(
+    payload: {
+      triggerName?: string;
+      input?: Record<string, unknown>;
+      executionId?: string;
+      toolResults?: ToolResult[];
+    },
+    signal?: AbortSignal,
+  ): AsyncGenerator<StreamEvent> {
+    let toolResults = payload.toolResults;
+    let executionId = payload.executionId;
     let continueLoop = true;
-
-    // If client tool results are provided, combine with any pending server results
-    if (options?.clientToolResults && options.clientToolResults.length > 0) {
-      // Combine server results (from mixed tools scenario) with client results
-      toolResults = [...this._pendingServerToolResults, ...options.clientToolResults];
-      this._pendingServerToolResults = []; // Clear after use
-    } else {
-      // Clear any stale pending results when starting a fresh trigger
-      this._pendingServerToolResults = [];
-    }
 
     while (continueLoop) {
       // Check if aborted before making request
-      if (options?.signal?.aborted) {
+      if (signal?.aborted) {
         yield { type: 'finish', finishReason: 'stop' };
         return;
       }
 
-      // Make request to platform (with toolResults on continuation)
+      // Build request body - only include defined fields
+      const body: Record<string, unknown> = {};
+      if (payload.triggerName !== undefined) body.triggerName = payload.triggerName;
+      if (payload.input !== undefined) body.input = payload.input;
+      if (executionId !== undefined) body.executionId = executionId;
+      if (toolResults !== undefined) body.toolResults = toolResults;
+
+      // Make request to platform
       let response: Response;
       try {
         response = await fetch(
@@ -164,12 +197,8 @@ export class AgentSession {
           {
             method: 'POST',
             headers: this.config.getHeaders(),
-            body: JSON.stringify({
-              triggerName,
-              input: triggerInput,
-              toolResults,
-            }),
-            signal: options?.signal,
+            body: JSON.stringify(body),
+            signal,
           },
         );
       } catch (err) {
@@ -192,7 +221,7 @@ export class AgentSession {
         return;
       }
 
-      // Reset tool results for next iteration
+      // Reset tool results for next iteration (executionId persists for server-side tool loops)
       toolResults = undefined;
 
       // Read and process the SSE stream
@@ -205,7 +234,7 @@ export class AgentSession {
       let streamDone = false;
       while (!streamDone) {
         // Check if aborted during stream reading
-        if (options?.signal?.aborted) {
+        if (signal?.aborted) {
           reader.releaseLock();
           yield { type: 'finish', finishReason: 'stop' };
           return;
@@ -245,6 +274,11 @@ export class AgentSession {
               }
               const event = parsed.data;
 
+              // Capture executionId from start event
+              if (event.type === 'start' && event.executionId) {
+                executionId = event.executionId;
+              }
+
               // Handle tool-request - split into server and client tools
               if (event.type === 'tool-request') {
                 pendingToolCalls = event.toolCalls;
@@ -274,7 +308,7 @@ export class AgentSession {
       }
 
       // Check if aborted before tool execution
-      if (options?.signal?.aborted) {
+      if (signal?.aborted) {
         yield { type: 'finish', finishReason: 'stop' };
         return;
       }
@@ -320,16 +354,18 @@ export class AgentSession {
 
         // If there are client tools, emit client-tool-request and stop the loop
         if (clientTools.length > 0) {
-          // Store server results for WebSocket continuation (same instance)
-          this._pendingServerToolResults = serverResults;
-
-          // Include server results in event for HTTP continuation (stateless)
+          if (!executionId) {
+            yield createInternalErrorEvent('Missing executionId for client-tool-request');
+            return;
+          }
+          // Include executionId and server results in event
           yield {
             type: 'client-tool-request',
+            executionId,
             toolCalls: clientTools,
             serverToolResults: serverResults.length > 0 ? serverResults : undefined,
           };
-          yield { type: 'finish', finishReason: 'client-tool-calls' };
+          yield { type: 'finish', finishReason: 'client-tool-calls', executionId };
           continueLoop = false;
         } else {
           // All tools handled server-side, continue loop
@@ -340,50 +376,6 @@ export class AgentSession {
         continueLoop = false;
       }
     }
-  }
-
-  /**
-   * Continue execution with client tool results.
-   *
-   * Uses the stored trigger context from the previous call to continue
-   * agent execution after client-side tool handling completes.
-   *
-   * **Important:** Only works for **WebSocket/long-lived connections** where the same
-   * AgentSession instance handles multiple messages. For serverless HTTP endpoints,
-   * use `trigger(triggerName, input, { clientToolResults })` with context from the request.
-   *
-   * @param results - Tool results from client-side execution
-   * @param options - Optional configuration including abort signal
-   *
-   * @example
-   * ```typescript
-   * // WebSocket handler
-   * async function handleClientToolResults(msg: ClientToolResultsMessage) {
-   *   const events = session.continueWithToolResults(msg.results);
-   *   await streamToClient(events);
-   * }
-   * ```
-   *
-   * @throws Error if no previous trigger context exists
-   */
-  async *continueWithToolResults(
-    results: ToolResult[],
-    options?: { signal?: AbortSignal },
-  ): AsyncGenerator<StreamEvent> {
-    if (this._lastTriggerName === null) {
-      throw new Error(
-        'No trigger context available. Call trigger() first before continuing with tool results.',
-      );
-    }
-
-    yield* this.trigger(this._lastTriggerName, this._lastTriggerInput, {
-      signal: options?.signal,
-      clientToolResults: results,
-    });
-  }
-
-  getSessionId(): string {
-    return this.sessionId;
   }
 
   private handleResourceUpdate(name: string, value: unknown): void {

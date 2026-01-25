@@ -311,28 +311,23 @@ export function createSocketTransport(options: SocketTransportOptions): SocketTr
     },
 
     /**
-     * Send client tool results directly over the socket.
-     * For WebSocket transport, this continues execution without a new trigger call.
-     * @param results - Array of tool results to send
+     * Continue execution with tool results after client-side tool handling.
+     * @param executionId - The execution ID from the client-tool-request event
+     * @param results - All tool results (server + client) to send
      */
-    sendClientToolResults(results: ToolResult[]): void {
-      if (socket?.readyState === SOCKET_OPEN) {
-        socket.send(
-          JSON.stringify({
-            type: 'client-tool-results',
-            results,
-          }),
-        );
-      }
-    },
+    async *continueWithToolResults(executionId: string, results: ToolResult[]) {
+      await ensureConnected();
 
-    /**
-     * Returns an async iterable for continuation events after sendClientToolResults.
-     * Resets streaming state and yields events until finish/error.
-     */
-    async *continuationEvents(): AsyncIterable<StreamEvent> {
       eventQueue = [];
       isStreaming = true;
+
+      socket!.send(
+        JSON.stringify({
+          type: 'client-tool-results',
+          executionId,
+          results,
+        }),
+      );
 
       while (true) {
         const event = await nextEvent();

@@ -21,7 +21,6 @@ export {
   type SocketTransport,
   type ConnectionState,
   type ConnectionStateListener,
-  type TriggerOptions,
   type HttpTransportOptions,
   type TriggerRequestOptions,
   type SocketLike,

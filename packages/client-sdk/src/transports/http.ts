@@ -1,6 +1,6 @@
 import { isAbortError, type ToolResult } from '@octavus/core';
 import { parseSSEStream } from '@/stream/reader';
-import type { Transport, TriggerOptions } from './types';
+import type { Transport } from './types';
 
 /**
  * Request options passed to the triggerRequest function.
@@ -8,8 +8,6 @@ import type { Transport, TriggerOptions } from './types';
 export interface TriggerRequestOptions {
   /** Abort signal to cancel the request */
   signal?: AbortSignal;
-  /** Results from client-side tool execution (for continuation) */
-  clientToolResults?: ToolResult[];
 }
 
 /**
@@ -18,32 +16,34 @@ export interface TriggerRequestOptions {
 export interface HttpTransportOptions {
   /**
    * Function to make the trigger request.
-   * Called each time `send()` is invoked on the chat.
+   * Called for both initial triggers and continuations.
    *
-   * @param triggerName - The trigger name (e.g., 'user-message')
-   * @param input - Input parameters for the trigger
-   * @param options - Optional request options including abort signal and client tool results
+   * @param params - Request parameters
+   * @param params.triggerName - The trigger name (for new triggers)
+   * @param params.input - Input parameters (for new triggers)
+   * @param params.executionId - Execution ID (for continuation)
+   * @param params.clientToolResults - Tool results (for continuation)
+   * @param options - Request options including abort signal
    * @returns Response with SSE stream body
    *
    * @example
    * ```typescript
-   * triggerRequest: (triggerName, input, options) =>
-   *   fetch('/api/octavus', {
+   * triggerRequest: (params, options) =>
+   *   fetch('/api/trigger', {
    *     method: 'POST',
    *     headers: { 'Content-Type': 'application/json' },
-   *     body: JSON.stringify({
-   *       sessionId,
-   *       triggerName,
-   *       input,
-   *       clientToolResults: options?.clientToolResults,
-   *     }),
+   *     body: JSON.stringify({ sessionId, ...params }),
    *     signal: options?.signal,
    *   }),
    * ```
    */
   triggerRequest: (
-    triggerName: string,
-    input?: Record<string, unknown>,
+    params: {
+      triggerName?: string;
+      input?: Record<string, unknown>;
+      executionId?: string;
+      clientToolResults?: ToolResult[];
+    },
     options?: TriggerRequestOptions,
   ) => Promise<Response>;
 }
@@ -55,16 +55,11 @@ export interface HttpTransportOptions {
  * @example
  * ```typescript
  * const transport = createHttpTransport({
- *   triggerRequest: (triggerName, input, options) =>
- *     fetch('/api/octavus', {
+ *   triggerRequest: (params, options) =>
+ *     fetch('/api/trigger', {
  *       method: 'POST',
  *       headers: { 'Content-Type': 'application/json' },
- *       body: JSON.stringify({
- *         sessionId,
- *         triggerName,
- *         input,
- *         clientToolResults: options?.clientToolResults,
- *       }),
+ *       body: JSON.stringify({ sessionId, ...params }),
  *       signal: options?.signal,
  *     }),
  * });
@@ -73,38 +68,50 @@ export interface HttpTransportOptions {
 export function createHttpTransport(options: HttpTransportOptions): Transport {
   let abortController: AbortController | null = null;
 
-  return {
-    async *trigger(triggerName, input, triggerOptions?: TriggerOptions) {
-      abortController = new AbortController();
+  async function* makeRequest(params: {
+    triggerName?: string;
+    input?: Record<string, unknown>;
+    executionId?: string;
+    clientToolResults?: ToolResult[];
+  }) {
+    abortController = new AbortController();
 
-      try {
-        const response = await options.triggerRequest(triggerName, input, {
-          signal: abortController.signal,
-          clientToolResults: triggerOptions?.clientToolResults,
-        });
+    try {
+      const response = await options.triggerRequest(params, {
+        signal: abortController.signal,
+      });
 
-        if (!response.ok) {
-          const errorText = await response.text().catch(() => `Request failed: ${response.status}`);
-          throw new Error(errorText);
-        }
-
-        if (!response.body) {
-          throw new Error('Response body is empty');
-        }
-
-        for await (const event of parseSSEStream(response, abortController.signal)) {
-          if (abortController.signal.aborted) {
-            break;
-          }
-          yield event;
-        }
-      } catch (err) {
-        // Handle abort errors gracefully - don't throw, just exit
-        if (isAbortError(err)) {
-          return;
-        }
-        throw err;
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => `Request failed: ${response.status}`);
+        throw new Error(errorText);
       }
+
+      if (!response.body) {
+        throw new Error('Response body is empty');
+      }
+
+      for await (const event of parseSSEStream(response, abortController.signal)) {
+        if (abortController.signal.aborted) {
+          break;
+        }
+        yield event;
+      }
+    } catch (err) {
+      // Handle abort errors gracefully - don't throw, just exit
+      if (isAbortError(err)) {
+        return;
+      }
+      throw err;
+    }
+  }
+
+  return {
+    async *trigger(triggerName, input) {
+      yield* makeRequest({ triggerName, input });
+    },
+
+    async *continueWithToolResults(executionId, results) {
+      yield* makeRequest({ executionId, clientToolResults: results });
     },
 
     stop() {

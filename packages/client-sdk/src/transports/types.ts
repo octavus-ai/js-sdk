@@ -5,14 +5,6 @@ import type { StreamEvent, ToolResult } from '@octavus/core';
 // =============================================================================
 
 /**
- * Options for triggering the agent.
- */
-export interface TriggerOptions {
-  /** Results from client-side tool execution (for continuation) */
-  clientToolResults?: ToolResult[];
-}
-
-/**
  * Transport interface for delivering events from server to client.
  *
  * Abstracts the connection mechanism (HTTP/SSE or WebSocket) behind a unified
@@ -24,13 +16,16 @@ export interface Transport {
    * Trigger the agent and stream events.
    * @param triggerName - The trigger name defined in the agent's protocol
    * @param input - Input parameters for variable substitution
-   * @param options - Optional trigger options including client tool results
    */
-  trigger(
-    triggerName: string,
-    input?: Record<string, unknown>,
-    options?: TriggerOptions,
-  ): AsyncIterable<StreamEvent>;
+  trigger(triggerName: string, input?: Record<string, unknown>): AsyncIterable<StreamEvent>;
+
+  /**
+   * Continue execution with tool results after client-side tool handling.
+   *
+   * @param executionId - The execution ID from the client-tool-request event
+   * @param results - All tool results (server + client) to send
+   */
+  continueWithToolResults(executionId: string, results: ToolResult[]): AsyncIterable<StreamEvent>;
 
   /** Stop the current stream. Safe to call when no stream is active. */
   stop(): void;
@@ -126,20 +121,6 @@ export interface SocketTransport extends Transport {
    * The transport will reconnect automatically on next `trigger()` call.
    */
   disconnect(): void;
-
-  /**
-   * Send client tool results directly over the socket.
-   * For WebSocket transport, this continues execution without a new trigger call.
-   *
-   * @param results - Array of tool results to send
-   */
-  sendClientToolResults(results: ToolResult[]): void;
-
-  /**
-   * Returns an async iterable for continuation events after sendClientToolResults.
-   * Call this after sendClientToolResults to consume the server's response.
-   */
-  continuationEvents(): AsyncIterable<StreamEvent>;
 }
 
 // =============================================================================
@@ -161,7 +142,6 @@ export function isSocketTransport(transport: Transport): transport is SocketTran
     'connect' in transport &&
     'disconnect' in transport &&
     'connectionState' in transport &&
-    'onConnectionStateChange' in transport &&
-    'sendClientToolResults' in transport
+    'onConnectionStateChange' in transport
   );
 }

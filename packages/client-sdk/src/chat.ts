@@ -18,7 +18,7 @@ import {
   type PendingToolCall,
   type ToolResult,
 } from '@octavus/core';
-import { isSocketTransport, type Transport } from './transports/types';
+import type { Transport } from './transports/types';
 import { uploadFiles, type UploadFilesOptions } from './files';
 
 /** Block types that are internal operations (not LLM-driven) */
@@ -400,10 +400,10 @@ export class OctavusChat {
   private _pendingClientToolsCache: PendingClientTool[] = [];
   private _completedToolResults: ToolResult[] = [];
   private _clientToolAbortController: AbortController | null = null;
-  private _lastTriggerName: string | null = null;
-  private _lastTriggerInput: Record<string, unknown> | undefined = undefined;
   // Server tool results from mixed server+client tools (for continuation)
   private _serverToolResults: ToolResult[] = [];
+  // Execution ID for continuation (from client-tool-request event)
+  private _pendingExecutionId: string | null = null;
 
   // Listener sets for reactive frameworks
   private listeners = new Set<Listener>();
@@ -562,14 +562,11 @@ export class OctavusChat {
     this.setError(null);
     this.streamingState = createEmptyStreamingState();
 
-    // Store trigger info for continuation
-    this._lastTriggerName = triggerName;
-    this._lastTriggerInput = processedInput;
-
     // Clear any previous client tool state
     this._pendingClientTools.clear();
     this._completedToolResults = [];
     this._serverToolResults = [];
+    this._pendingExecutionId = null;
     this.updatePendingClientToolsCache();
 
     try {
@@ -737,8 +734,7 @@ export class OctavusChat {
     this._pendingClientTools.clear();
     this._completedToolResults = [];
     this._serverToolResults = [];
-    this._lastTriggerName = null;
-    this._lastTriggerInput = undefined;
+    this._pendingExecutionId = null;
     this.updatePendingClientToolsCache();
 
     this.transport.stop();
@@ -1160,8 +1156,6 @@ export class OctavusChat {
 
         this.setStatus('idle');
         this.streamingState = null;
-        this._lastTriggerName = null;
-        this._lastTriggerInput = undefined;
         this.options.onFinish?.();
         break;
       }
@@ -1185,7 +1179,8 @@ export class OctavusChat {
         break;
 
       case 'client-tool-request':
-        // Store server tool results for continuation (mixed tools scenario)
+        // Store execution ID and server tool results for continuation
+        this._pendingExecutionId = event.executionId;
         this._serverToolResults = event.serverToolResults ?? [];
         // Handle client-side tool execution
         void this.handleClientToolRequest(event.toolCalls, state);
@@ -1254,15 +1249,13 @@ export class OctavusChat {
   private async continueWithClientToolResults(): Promise<void> {
     if (this._completedToolResults.length === 0) return;
 
-    if (this._lastTriggerName === null) {
-      // Context lost - this can happen if the page was refreshed while client tools were pending
+    if (this._pendingExecutionId === null) {
+      // Context lost - this shouldn't happen, but handle gracefully
       this.setStatus('error');
       this.setError(
         new OctavusError({
           errorType: 'internal_error',
-          message:
-            'Cannot continue execution: trigger context was lost. ' +
-            'This can happen if the page was refreshed while client tools were pending.',
+          message: 'Cannot continue execution: execution ID was lost.',
           source: 'client',
           retryable: false,
         }),
@@ -1270,37 +1263,18 @@ export class OctavusChat {
       return;
     }
 
-    const clientResults = [...this._completedToolResults];
+    // Combine server results (from mixed tools scenario) with client results
+    const allResults = [...this._serverToolResults, ...this._completedToolResults];
+    const executionId = this._pendingExecutionId;
+    this._serverToolResults = [];
     this._completedToolResults = [];
+    this._pendingExecutionId = null;
 
     this.setStatus('streaming');
 
     try {
-      // For socket transport, send only client results
-      // Server-SDK will combine with stored server results
-      if (isSocketTransport(this.transport)) {
-        const socketTransport = this.transport;
-        socketTransport.sendClientToolResults(clientResults);
-        this._serverToolResults = []; // Clear after use
-
-        // Consume continuation events from the server
-        for await (const event of socketTransport.continuationEvents()) {
-          if (this.streamingState === null) break;
-          this.handleStreamEvent(event, this.streamingState);
-        }
-        return;
-      }
-
-      // For HTTP transport, include server results (stateless - server doesn't store them)
-      const allResults = [...this._serverToolResults, ...clientResults];
-      this._serverToolResults = [];
-
-      // For HTTP transport, make a new trigger request with clientToolResults
-      for await (const event of this.transport.trigger(
-        this._lastTriggerName,
-        this._lastTriggerInput,
-        { clientToolResults: allResults },
-      )) {
+      // Use the transport's continuation method (works for both HTTP and Socket)
+      for await (const event of this.transport.continueWithToolResults(executionId, allResults)) {
         if (this.streamingState === null) break;
         this.handleStreamEvent(event, this.streamingState);
       }

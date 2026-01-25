@@ -40,11 +40,13 @@ export const toolCallInfoSchema = z.object({
 export const startEventSchema = z.object({
   type: z.literal('start'),
   messageId: z.string().optional(),
+  executionId: z.string().optional(),
 });
 
 export const finishEventSchema = z.object({
   type: z.literal('finish'),
   finishReason: finishReasonSchema,
+  executionId: z.string().optional(),
 });
 
 const errorTypeSchema = z.enum([
@@ -245,6 +247,7 @@ export const toolRequestEventSchema = z.object({
 
 export const clientToolRequestEventSchema = z.object({
   type: z.literal('client-tool-request'),
+  executionId: z.string(),
   toolCalls: z.array(pendingToolCallSchema),
   serverToolResults: z.array(toolResultSchema).optional(),
 });
