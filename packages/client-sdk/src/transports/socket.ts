@@ -1,5 +1,10 @@
-import { safeParseStreamEvent, type StreamEvent } from '@octavus/core';
-import type { SocketTransport, ConnectionState, ConnectionStateListener } from './types';
+import { safeParseStreamEvent, type StreamEvent, type ToolResult } from '@octavus/core';
+import type {
+  SocketTransport,
+  ConnectionState,
+  ConnectionStateListener,
+  TriggerOptions,
+} from './types';
 
 // =============================================================================
 // Types
@@ -276,7 +281,7 @@ export function createSocketTransport(options: SocketTransportOptions): SocketTr
     // Streaming
     // =========================================================================
 
-    async *trigger(triggerName, input) {
+    async *trigger(triggerName, input, triggerOptions?: TriggerOptions) {
       await ensureConnected();
 
       eventQueue = [];
@@ -287,6 +292,7 @@ export function createSocketTransport(options: SocketTransportOptions): SocketTr
           type: 'trigger',
           triggerName,
           input,
+          clientToolResults: triggerOptions?.clientToolResults,
         }),
       );
 
@@ -306,6 +312,39 @@ export function createSocketTransport(options: SocketTransportOptions): SocketTr
       if (eventResolver) {
         eventResolver(null);
         eventResolver = null;
+      }
+    },
+
+    /**
+     * Send client tool results directly over the socket.
+     * For WebSocket transport, this continues execution without a new trigger call.
+     * @param results - Array of tool results to send
+     */
+    sendClientToolResults(results: ToolResult[]): void {
+      if (socket?.readyState === SOCKET_OPEN) {
+        socket.send(
+          JSON.stringify({
+            type: 'client-tool-results',
+            results,
+          }),
+        );
+      }
+    },
+
+    /**
+     * Returns an async iterable for continuation events after sendClientToolResults.
+     * Resets streaming state and yields events until finish/error.
+     */
+    async *continuationEvents(): AsyncIterable<StreamEvent> {
+      // Reset streaming state to receive continuation events
+      eventQueue = [];
+      isStreaming = true;
+
+      while (true) {
+        const event = await nextEvent();
+        if (event === null) break;
+        yield event;
+        if (event.type === 'finish' || event.type === 'error') break;
       }
     },
   };

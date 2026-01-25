@@ -14,6 +14,7 @@ export const toolCallStatusSchema = z.enum(['pending', 'streaming', 'available',
 export const finishReasonSchema = z.enum([
   'stop',
   'tool-calls',
+  'client-tool-calls',
   'length',
   'content-filter',
   'error',
@@ -233,6 +234,11 @@ export const toolRequestEventSchema = z.object({
   toolCalls: z.array(pendingToolCallSchema),
 });
 
+export const clientToolRequestEventSchema = z.object({
+  type: z.literal('client-tool-request'),
+  toolCalls: z.array(pendingToolCallSchema),
+});
+
 export const toolResultSchema = z.object({
   toolCallId: z.string(),
   toolName: z.string().optional(),
@@ -298,6 +304,7 @@ export const streamEventSchema = z.union([
   blockEndEventSchema,
   resourceUpdateEventSchema,
   toolRequestEventSchema,
+  clientToolRequestEventSchema,
   fileAvailableEventSchema,
 ]);
 

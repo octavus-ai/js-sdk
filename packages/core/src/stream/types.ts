@@ -124,7 +124,14 @@ export interface ErrorEvent {
   tool?: ToolErrorInfo;
 }
 
-export type FinishReason = 'stop' | 'tool-calls' | 'length' | 'content-filter' | 'error' | 'other';
+export type FinishReason =
+  | 'stop'
+  | 'tool-calls'
+  | 'client-tool-calls'
+  | 'length'
+  | 'content-filter'
+  | 'error'
+  | 'other';
 
 // ================================= Text ======================================
 
@@ -313,6 +320,16 @@ export interface ToolRequestEvent {
   toolCalls: PendingToolCall[];
 }
 
+/**
+ * Request for client-side tool execution.
+ * Emitted by server-SDK when a tool has no server handler registered.
+ * Client should execute the tools and submit results to continue.
+ */
+export interface ClientToolRequestEvent {
+  type: 'client-tool-request';
+  toolCalls: PendingToolCall[];
+}
+
 /** Result from tool execution (consumer's response to tool-request) */
 export interface ToolResult {
   toolCallId: string;
@@ -391,6 +408,7 @@ export type StreamEvent =
   | BlockEndEvent
   | ResourceUpdateEvent
   | ToolRequestEvent
+  | ClientToolRequestEvent
   | FileAvailableEvent;
 
 // =============================================================================

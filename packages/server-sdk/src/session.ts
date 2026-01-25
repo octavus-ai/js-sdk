@@ -59,6 +59,8 @@ export interface SessionConfig {
 export interface TriggerOptions {
   /** Abort signal to cancel the trigger execution */
   signal?: AbortSignal;
+  /** Results from client-side tool execution (for continuation) */
+  clientToolResults?: ToolResult[];
 }
 
 /** Handles streaming and tool continuation for agent sessions */
@@ -86,13 +88,16 @@ export class AgentSession {
    * This method:
    * 1. POSTs to the platform trigger endpoint
    * 2. Yields parsed stream events to the consumer
-   * 3. When tool-request event is received: executes tools locally
-   * 4. POSTs a new request with toolResults to continue
-   * 5. Repeats until done (no more tool requests)
+   * 3. When tool-request event is received:
+   *    - Server tools (with handlers) are executed locally
+   *    - Client tools (without handlers) are forwarded via client-tool-request
+   * 4. If all tools have server handlers: POSTs a new request with toolResults to continue
+   * 5. If any tools need client handling: yields client-tool-request and waits for clientToolResults
+   * 6. Repeats until done (no more tool requests)
    *
    * @param triggerName - The trigger name defined in the agent's protocol
    * @param triggerInput - Input parameters for the trigger
-   * @param options - Optional configuration including abort signal
+   * @param options - Optional configuration including abort signal and client tool results
    *
    * @example
    * ```typescript
@@ -106,6 +111,11 @@ export class AgentSession {
    * return new Response(toSSEStream(events), {
    *   headers: { 'Content-Type': 'text/event-stream' },
    * });
+   *
+   * // Continue with client tool results
+   * const events = session.trigger('user-message', input, {
+   *   clientToolResults: [{ toolCallId: '...', result: { rating: 5 } }],
+   * });
    * ```
    */
   async *trigger(
@@ -115,6 +125,11 @@ export class AgentSession {
   ): AsyncGenerator<StreamEvent> {
     let toolResults: ToolResult[] | undefined;
     let continueLoop = true;
+
+    // If client tool results are provided, use them as initial tool results
+    if (options?.clientToolResults && options.clientToolResults.length > 0) {
+      toolResults = options.clientToolResults;
+    }
 
     while (continueLoop) {
       // Check if aborted before making request
@@ -212,7 +227,7 @@ export class AgentSession {
               }
               const event = parsed.data;
 
-              // Handle tool-request - execute tools and prepare continuation
+              // Handle tool-request - split into server and client tools
               if (event.type === 'tool-request') {
                 pendingToolCalls = event.toolCalls;
                 // Don't forward tool-request to consumer
@@ -248,21 +263,17 @@ export class AgentSession {
         return;
       }
 
-      // If we have pending tool calls, execute them and continue
+      // If we have pending tool calls, split into server and client tools
       if (pendingToolCalls && pendingToolCalls.length > 0) {
-        toolResults = await Promise.all(
-          pendingToolCalls.map(async (tc): Promise<ToolResult> => {
-            const handler = this.toolHandlers[tc.toolName];
-            if (!handler) {
-              return {
-                toolCallId: tc.toolCallId,
-                toolName: tc.toolName,
-                error: `No handler for tool: ${tc.toolName}`,
-                outputVariable: tc.outputVariable,
-                blockIndex: tc.blockIndex,
-              };
-            }
+        // Split tools by handler presence
+        const serverTools = pendingToolCalls.filter((tc) => this.toolHandlers[tc.toolName]);
+        const clientTools = pendingToolCalls.filter((tc) => !this.toolHandlers[tc.toolName]);
 
+        // Execute server tools
+        const serverResults = await Promise.all(
+          serverTools.map(async (tc): Promise<ToolResult> => {
+            // Handler is guaranteed to exist since we filtered by handler presence
+            const handler = this.toolHandlers[tc.toolName]!;
             try {
               const result = await handler(tc.args);
               return {
@@ -284,9 +295,8 @@ export class AgentSession {
           }),
         );
 
-        // Emit tool-output events immediately so UI updates right away
-        // (before making continuation request)
-        for (const tr of toolResults) {
+        // Emit tool-output events for server tools immediately
+        for (const tr of serverResults) {
           if (tr.error) {
             yield { type: 'tool-output-error', toolCallId: tr.toolCallId, error: tr.error };
           } else {
@@ -294,7 +304,15 @@ export class AgentSession {
           }
         }
 
-        // Continue loop with tool results
+        // If there are client tools, emit client-tool-request and stop the loop
+        if (clientTools.length > 0) {
+          yield { type: 'client-tool-request', toolCalls: clientTools };
+          yield { type: 'finish', finishReason: 'client-tool-calls' };
+          continueLoop = false;
+        } else {
+          // All tools handled server-side, continue loop
+          toolResults = serverResults;
+        }
       } else {
         // No pending tools, we're done
         continueLoop = false;

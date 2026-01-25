@@ -14,6 +14,9 @@ import {
   type FileReference,
   type UploadFilesOptions,
   type UploadUrlsResponse,
+  type ClientToolContext,
+  type ClientToolHandler,
+  type PendingClientTool,
 } from '@octavus/client-sdk';
 
 export type {
@@ -23,6 +26,9 @@ export type {
   FileReference,
   UploadFilesOptions,
   UploadUrlsResponse,
+  ClientToolContext,
+  ClientToolHandler,
+  PendingClientTool,
 };
 
 export interface UseOctavusChatReturn {
@@ -50,6 +56,39 @@ export interface UseOctavusChatReturn {
    * Connection error if `connectionState` is 'error'.
    */
   connectionError: Error | undefined;
+  /**
+   * Pending client tool calls awaiting user interaction.
+   * These are tools marked as 'interactive' that need user input.
+   *
+   * Use this to render custom UI (modals, dialogs, etc.) and call
+   * `submitClientToolResult()` when the user provides input.
+   *
+   * @example
+   * ```tsx
+   * {pendingClientTools.map(tool => (
+   *   <FeedbackModal
+   *     key={tool.toolCallId}
+   *     showFeedback={tool.args.showFeedback}
+   *     onSubmit={(rating, feedback) => {
+   *       submitClientToolResult(tool.toolCallId, { rating, feedback });
+   *     }}
+   *     onCancel={() => {
+   *       submitClientToolResult(tool.toolCallId, null, 'User cancelled');
+   *     }}
+   *   />
+   * ))}
+   * ```
+   */
+  pendingClientTools: PendingClientTool[];
+  /**
+   * Submit a result for an interactive client tool.
+   * Call this when the user has provided input for a pending interactive tool.
+   *
+   * @param toolCallId - The ID of the tool call to submit a result for
+   * @param result - The result from user interaction (or undefined if error)
+   * @param errorMessage - Optional error message if the tool failed or was cancelled
+   */
+  submitClientToolResult: (toolCallId: string, result?: unknown, errorMessage?: string) => void;
   /**
    * Trigger the agent and optionally add a user message to the chat.
    *
@@ -193,10 +232,16 @@ export function useOctavusChat(options: OctavusChatOptions): UseOctavusChatRetur
   const getMessagesSnapshot = useCallback(() => chat.messages, [chat]);
   const getStatusSnapshot = useCallback(() => chat.status, [chat]);
   const getErrorSnapshot = useCallback(() => chat.error, [chat]);
+  const getPendingClientToolsSnapshot = useCallback(() => chat.pendingClientTools, [chat]);
 
   const messages = useSyncExternalStore(subscribe, getMessagesSnapshot, getMessagesSnapshot);
   const status = useSyncExternalStore(subscribe, getStatusSnapshot, getStatusSnapshot);
   const error = useSyncExternalStore(subscribe, getErrorSnapshot, getErrorSnapshot);
+  const pendingClientTools = useSyncExternalStore(
+    subscribe,
+    getPendingClientToolsSnapshot,
+    getPendingClientToolsSnapshot,
+  );
 
   const socketTransport = isSocketTransport(transport) ? transport : null;
   const [connectionState, setConnectionState] = useState<ConnectionState | undefined>(
@@ -236,6 +281,12 @@ export function useOctavusChat(options: OctavusChatOptions): UseOctavusChatRetur
     [chat],
   );
 
+  const submitClientToolResult = useCallback(
+    (toolCallId: string, result?: unknown, errorMessage?: string) =>
+      chat.submitClientToolResult(toolCallId, result, errorMessage),
+    [chat],
+  );
+
   // Stable references for connect/disconnect (socket transport only)
   const connect = useCallback(
     () => socketTransport?.connect() ?? Promise.resolve(),
@@ -249,6 +300,8 @@ export function useOctavusChat(options: OctavusChatOptions): UseOctavusChatRetur
     error,
     connectionState,
     connectionError,
+    pendingClientTools,
+    submitClientToolResult,
     send,
     stop,
     connect: socketTransport ? connect : undefined,

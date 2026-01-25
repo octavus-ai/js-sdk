@@ -1,6 +1,6 @@
-import { isAbortError } from '@octavus/core';
+import { isAbortError, type ToolResult } from '@octavus/core';
 import { parseSSEStream } from '@/stream/reader';
-import type { Transport } from './types';
+import type { Transport, TriggerOptions } from './types';
 
 /**
  * Request options passed to the triggerRequest function.
@@ -8,6 +8,8 @@ import type { Transport } from './types';
 export interface TriggerRequestOptions {
   /** Abort signal to cancel the request */
   signal?: AbortSignal;
+  /** Results from client-side tool execution (for continuation) */
+  clientToolResults?: ToolResult[];
 }
 
 /**
@@ -20,7 +22,7 @@ export interface HttpTransportOptions {
    *
    * @param triggerName - The trigger name (e.g., 'user-message')
    * @param input - Input parameters for the trigger
-   * @param options - Optional request options including abort signal
+   * @param options - Optional request options including abort signal and client tool results
    * @returns Response with SSE stream body
    *
    * @example
@@ -29,7 +31,12 @@ export interface HttpTransportOptions {
    *   fetch('/api/octavus', {
    *     method: 'POST',
    *     headers: { 'Content-Type': 'application/json' },
-   *     body: JSON.stringify({ sessionId, triggerName, input }),
+   *     body: JSON.stringify({
+   *       sessionId,
+   *       triggerName,
+   *       input,
+   *       clientToolResults: options?.clientToolResults,
+   *     }),
    *     signal: options?.signal,
    *   }),
    * ```
@@ -52,7 +59,12 @@ export interface HttpTransportOptions {
  *     fetch('/api/octavus', {
  *       method: 'POST',
  *       headers: { 'Content-Type': 'application/json' },
- *       body: JSON.stringify({ sessionId, triggerName, input }),
+ *       body: JSON.stringify({
+ *         sessionId,
+ *         triggerName,
+ *         input,
+ *         clientToolResults: options?.clientToolResults,
+ *       }),
  *       signal: options?.signal,
  *     }),
  * });
@@ -62,12 +74,13 @@ export function createHttpTransport(options: HttpTransportOptions): Transport {
   let abortController: AbortController | null = null;
 
   return {
-    async *trigger(triggerName, input) {
+    async *trigger(triggerName, input, triggerOptions?: TriggerOptions) {
       abortController = new AbortController();
 
       try {
         const response = await options.triggerRequest(triggerName, input, {
           signal: abortController.signal,
+          clientToolResults: triggerOptions?.clientToolResults,
         });
 
         if (!response.ok) {

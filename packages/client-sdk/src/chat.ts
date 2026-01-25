@@ -15,8 +15,10 @@ import {
   type DisplayMode,
   type StreamEvent,
   type FileReference,
+  type PendingToolCall,
+  type ToolResult,
 } from '@octavus/core';
-import type { Transport } from './transports/types';
+import { isSocketTransport, type Transport } from './transports/types';
 import { uploadFiles, type UploadFilesOptions } from './files';
 
 /** Block types that are internal operations (not LLM-driven) */
@@ -26,7 +28,47 @@ const OPERATION_BLOCK_TYPES = new Set(['set-resource', 'serialize-thread', 'gene
 // Types
 // =============================================================================
 
-export type ChatStatus = 'idle' | 'streaming' | 'error';
+export type ChatStatus = 'idle' | 'streaming' | 'error' | 'awaiting-input';
+
+/**
+ * Context provided to client tool handlers.
+ */
+export interface ClientToolContext {
+  /** Unique identifier for this tool call */
+  toolCallId: string;
+  /** Name of the tool being called */
+  toolName: string;
+  /** Signal for cancellation if user stops generation */
+  signal: AbortSignal;
+}
+
+/**
+ * Handler function for client-side tool execution.
+ * Can be:
+ * - An async function that executes automatically and returns a result
+ * - The string 'interactive' to indicate the tool requires user interaction
+ */
+export type ClientToolHandler =
+  | ((args: Record<string, unknown>, ctx: ClientToolContext) => Promise<unknown>)
+  | 'interactive';
+
+/**
+ * Pending client tool call awaiting user interaction.
+ */
+export interface PendingClientTool {
+  /** Unique identifier for this tool call */
+  toolCallId: string;
+  /** Name of the tool being called */
+  toolName: string;
+  /** Arguments passed to the tool */
+  args: Record<string, unknown>;
+  /** 'llm' for LLM-initiated, 'block' for protocol block */
+  source?: 'llm' | 'block';
+  /** For block-based tools: variable name to store result in */
+  outputVariable?: string;
+  /** For block-based tools: block index to resume from after execution */
+  blockIndex?: number;
+}
 
 /**
  * Input for creating a user message.
@@ -72,6 +114,35 @@ export interface OctavusChatOptions {
    * ```
    */
   requestUploadUrls?: UploadFilesOptions['requestUploadUrls'];
+
+  /**
+   * Client-side tool handlers.
+   * Register handlers for tools that should execute in the browser.
+   *
+   * - If a tool has a handler function: executes automatically
+   * - If a tool is marked as 'interactive': waits for user input via submitClientToolResult()
+   *
+   * @example Automatic client tool
+   * ```typescript
+   * clientTools: {
+   *   'get-browser-location': async () => {
+   *     const pos = await new Promise((resolve, reject) => {
+   *       navigator.geolocation.getCurrentPosition(resolve, reject);
+   *     });
+   *     return { lat: pos.coords.latitude, lng: pos.coords.longitude };
+   *   },
+   * }
+   * ```
+   *
+   * @example Interactive client tool (user input required)
+   * ```typescript
+   * clientTools: {
+   *   'request-feedback': 'interactive',
+   * }
+   * // Then render UI based on pendingClientTools and call submitClientToolResult()
+   * ```
+   */
+  clientTools?: Record<string, ClientToolHandler>;
 
   /** Initial messages (for session refresh) */
   initialMessages?: UIMessage[];
@@ -324,6 +395,14 @@ export class OctavusChat {
   private transport: Transport;
   private streamingState: StreamingState | null = null;
 
+  // Client tool state
+  private _pendingClientTools = new Map<string, PendingClientTool>();
+  private _pendingClientToolsCache: PendingClientTool[] = [];
+  private _completedToolResults: ToolResult[] = [];
+  private _clientToolAbortController: AbortController | null = null;
+  private _lastTriggerName: string | null = null;
+  private _lastTriggerInput: Record<string, unknown> | undefined = undefined;
+
   // Listener sets for reactive frameworks
   private listeners = new Set<Listener>();
 
@@ -351,6 +430,19 @@ export class OctavusChat {
    */
   get error(): OctavusError | null {
     return this._error;
+  }
+
+  /**
+   * Pending client tool calls awaiting user interaction.
+   * These are tools marked as 'interactive' that need user input before continuing.
+   *
+   * Use this to render custom UI (modals, dialogs, etc.) and call
+   * `submitClientToolResult()` when the user provides input.
+   *
+   * Note: Returns a cached array for React useSyncExternalStore compatibility.
+   */
+  get pendingClientTools(): PendingClientTool[] {
+    return this._pendingClientToolsCache;
   }
 
   // =========================================================================
@@ -387,6 +479,10 @@ export class OctavusChat {
   private setError(error: OctavusError | null): void {
     this._error = error;
     this.notifyListeners();
+  }
+
+  private updatePendingClientToolsCache(): void {
+    this._pendingClientToolsCache = Array.from(this._pendingClientTools.values());
   }
 
   // =========================================================================
@@ -463,6 +559,15 @@ export class OctavusChat {
     this.setStatus('streaming');
     this.setError(null);
     this.streamingState = createEmptyStreamingState();
+
+    // Store trigger info for continuation
+    this._lastTriggerName = triggerName;
+    this._lastTriggerInput = processedInput;
+
+    // Clear any previous client tool state
+    this._pendingClientTools.clear();
+    this._completedToolResults = [];
+    this.updatePendingClientToolsCache();
 
     try {
       for await (const event of this.transport.trigger(triggerName, processedInput)) {
@@ -568,11 +673,73 @@ export class OctavusChat {
     });
   }
 
-  /** Stop the current streaming and finalize any partial message */
-  stop(): void {
-    if (this._status !== 'streaming') {
+  /**
+   * Submit a result for an interactive client tool.
+   * Call this when the user has provided input for a pending interactive tool.
+   *
+   * @param toolCallId - The ID of the tool call to submit a result for
+   * @param result - The result from user interaction
+   * @param error - Optional error message if the tool failed or was cancelled
+   *
+   * @example
+   * ```typescript
+   * // User submitted a rating
+   * submitClientToolResult(toolCallId, { rating: 5, feedback: 'Great!' });
+   *
+   * // User cancelled the modal
+   * submitClientToolResult(toolCallId, null, 'User cancelled');
+   * ```
+   */
+  submitClientToolResult(toolCallId: string, result?: unknown, error?: string): void {
+    const pendingTool = this._pendingClientTools.get(toolCallId);
+    if (!pendingTool) {
+      // Tool not found - may have been cancelled or already resolved
       return;
     }
+
+    // Remove from pending
+    this._pendingClientTools.delete(toolCallId);
+    this.updatePendingClientToolsCache();
+
+    // Add to completed results (include continuation fields)
+    const toolResult: ToolResult = {
+      toolCallId,
+      toolName: pendingTool.toolName,
+      result: error ? undefined : result,
+      error,
+      outputVariable: pendingTool.outputVariable,
+      blockIndex: pendingTool.blockIndex,
+    };
+    this._completedToolResults.push(toolResult);
+
+    // Emit tool output event for UI update
+    if (error) {
+      this.emitToolOutputError(toolCallId, error);
+    } else {
+      this.emitToolOutputAvailable(toolCallId, result);
+    }
+
+    // Check if all pending tools are resolved
+    if (this._pendingClientTools.size === 0) {
+      // Continue with collected results
+      void this.continueWithClientToolResults();
+    }
+
+    this.notifyListeners();
+  }
+
+  /** Stop the current streaming and finalize any partial message */
+  stop(): void {
+    if (this._status !== 'streaming' && this._status !== 'awaiting-input') {
+      return;
+    }
+
+    // Cancel any pending client tool execution
+    this._clientToolAbortController?.abort();
+    this._clientToolAbortController = null;
+    this._pendingClientTools.clear();
+    this._completedToolResults = [];
+    this.updatePendingClientToolsCache();
 
     this.transport.stop();
 
@@ -957,6 +1124,17 @@ export class OctavusChat {
         break;
 
       case 'finish': {
+        // Handle client-tool-calls finish reason
+        if (event.finishReason === 'client-tool-calls') {
+          // Don't finalize message - we're waiting for client tools
+          if (this._pendingClientTools.size > 0) {
+            this.setStatus('awaiting-input');
+          }
+          // If no interactive tools but we have completed results, continueWithClientToolResults
+          // was already called from handleClientToolRequest
+          return;
+        }
+
         const finalMessage = buildMessageFromState(state, 'done');
 
         finalMessage.parts = finalMessage.parts.map((part) => {
@@ -982,6 +1160,8 @@ export class OctavusChat {
 
         this.setStatus('idle');
         this.streamingState = null;
+        this._lastTriggerName = null;
+        this._lastTriggerInput = undefined;
         this.options.onFinish?.();
         break;
       }
@@ -1003,6 +1183,11 @@ export class OctavusChat {
       case 'tool-request':
         // Handled by server-sdk, not relevant for UI
         break;
+
+      case 'client-tool-request':
+        // Handle client-side tool execution
+        void this.handleClientToolRequest(event.toolCalls, state);
+        break;
     }
   }
 
@@ -1021,5 +1206,182 @@ export class OctavusChat {
     }
 
     this.setMessages(messages);
+  }
+
+  /**
+   * Emit a tool-output-available event for a client tool result.
+   */
+  private emitToolOutputAvailable(toolCallId: string, output: unknown): void {
+    const state = this.streamingState;
+    if (!state) return;
+
+    const toolPartIndex = state.parts.findIndex(
+      (p: UIMessagePart) => p.type === 'tool-call' && p.toolCallId === toolCallId,
+    );
+    if (toolPartIndex >= 0) {
+      const part = state.parts[toolPartIndex] as UIToolCallPart;
+      part.result = output;
+      part.status = 'done';
+      state.parts[toolPartIndex] = { ...part };
+      this.updateStreamingMessage();
+    }
+  }
+
+  /**
+   * Emit a tool-output-error event for a client tool result.
+   */
+  private emitToolOutputError(toolCallId: string, error: string): void {
+    const state = this.streamingState;
+    if (!state) return;
+
+    const toolPartIndex = state.parts.findIndex(
+      (p: UIMessagePart) => p.type === 'tool-call' && p.toolCallId === toolCallId,
+    );
+    if (toolPartIndex >= 0) {
+      const part = state.parts[toolPartIndex] as UIToolCallPart;
+      part.error = error;
+      part.status = 'error';
+      state.parts[toolPartIndex] = { ...part };
+      this.updateStreamingMessage();
+    }
+  }
+
+  /**
+   * Continue execution with collected client tool results.
+   */
+  private async continueWithClientToolResults(): Promise<void> {
+    if (this._completedToolResults.length === 0) return;
+    if (this._lastTriggerName === null) return;
+
+    const results = [...this._completedToolResults];
+    this._completedToolResults = [];
+
+    this.setStatus('streaming');
+
+    try {
+      // For socket transport, send results and consume continuation events
+      if (isSocketTransport(this.transport)) {
+        const socketTransport = this.transport;
+        socketTransport.sendClientToolResults(results);
+
+        // Consume continuation events from the server
+        for await (const event of socketTransport.continuationEvents()) {
+          if (this.streamingState === null) break;
+          this.handleStreamEvent(event, this.streamingState);
+        }
+        return;
+      }
+
+      // For HTTP transport, make a new trigger request with clientToolResults
+      for await (const event of this.transport.trigger(
+        this._lastTriggerName,
+        this._lastTriggerInput,
+        { clientToolResults: results },
+      )) {
+        if (this.streamingState === null) break;
+        this.handleStreamEvent(event, this.streamingState);
+      }
+    } catch (err) {
+      const errorObj = OctavusError.isInstance(err)
+        ? err
+        : new OctavusError({
+            errorType: 'internal_error',
+            message: err instanceof Error ? err.message : 'Unknown error',
+            source: 'client',
+            retryable: false,
+            cause: err,
+          });
+
+      this.setError(errorObj);
+      this.setStatus('error');
+      this.streamingState = null;
+      this.options.onError?.(errorObj);
+    }
+  }
+
+  /**
+   * Handle client tool request event.
+   */
+  private async handleClientToolRequest(
+    toolCalls: PendingToolCall[],
+    state: StreamingState,
+  ): Promise<void> {
+    this._clientToolAbortController = new AbortController();
+
+    for (const tc of toolCalls) {
+      const handler = this.options.clientTools?.[tc.toolName];
+
+      if (handler === 'interactive') {
+        // Mark as pending interactive tool (preserve continuation fields)
+        this._pendingClientTools.set(tc.toolCallId, {
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          args: tc.args,
+          source: tc.source,
+          outputVariable: tc.outputVariable,
+          blockIndex: tc.blockIndex,
+        });
+        this.updatePendingClientToolsCache();
+
+        // Update tool status to awaiting input
+        const toolPartIndex = state.parts.findIndex(
+          (p: UIMessagePart) => p.type === 'tool-call' && p.toolCallId === tc.toolCallId,
+        );
+        if (toolPartIndex >= 0) {
+          const part = state.parts[toolPartIndex] as UIToolCallPart;
+          // Keep running status - user will see the tool is "executing" while modal is open
+          state.parts[toolPartIndex] = { ...part };
+        }
+      } else if (handler) {
+        // Execute automatic handler
+        try {
+          const result = await handler(tc.args, {
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            signal: this._clientToolAbortController.signal,
+          });
+
+          this._completedToolResults.push({
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            result,
+            outputVariable: tc.outputVariable,
+            blockIndex: tc.blockIndex,
+          });
+
+          // Emit tool output for UI
+          this.emitToolOutputAvailable(tc.toolCallId, result);
+        } catch (err) {
+          const errorMessage = err instanceof Error ? err.message : 'Tool execution failed';
+          this._completedToolResults.push({
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            error: errorMessage,
+            outputVariable: tc.outputVariable,
+            blockIndex: tc.blockIndex,
+          });
+
+          // Emit tool error for UI
+          this.emitToolOutputError(tc.toolCallId, errorMessage);
+        }
+      } else {
+        // No handler registered - treat as error
+        const errorMessage = `No client handler for tool: ${tc.toolName}`;
+        this._completedToolResults.push({
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          error: errorMessage,
+          outputVariable: tc.outputVariable,
+          blockIndex: tc.blockIndex,
+        });
+
+        this.emitToolOutputError(tc.toolCallId, errorMessage);
+      }
+    }
+
+    // If no interactive tools, auto-continue with results
+    if (this._pendingClientTools.size === 0 && this._completedToolResults.length > 0) {
+      await this.continueWithClientToolResults();
+    }
   }
 }
