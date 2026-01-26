@@ -144,9 +144,6 @@ export class AgentSession {
     return this.sessionId;
   }
 
-  /**
-   * Core streaming logic shared by trigger() and continueWithToolResults().
-   */
   private async *executeStream(
     payload: {
       triggerName?: string;
