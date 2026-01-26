@@ -61,12 +61,16 @@ export interface ToolCallInfo {
 export interface StartEvent {
   type: 'start';
   messageId?: string;
+  /** Execution ID for tool continuation. Used by client to resume after client-side tool handling. */
+  executionId?: string;
 }
 
 /** Signals completion of streaming */
 export interface FinishEvent {
   type: 'finish';
   finishReason: FinishReason;
+  /** Execution ID for cleanup confirmation. Present when execution completes or pauses for client tools. */
+  executionId?: string;
 }
 
 /**
@@ -124,7 +128,14 @@ export interface ErrorEvent {
   tool?: ToolErrorInfo;
 }
 
-export type FinishReason = 'stop' | 'tool-calls' | 'length' | 'content-filter' | 'error' | 'other';
+export type FinishReason =
+  | 'stop'
+  | 'tool-calls'
+  | 'client-tool-calls'
+  | 'length'
+  | 'content-filter'
+  | 'error'
+  | 'other';
 
 // ================================= Text ======================================
 
@@ -313,6 +324,27 @@ export interface ToolRequestEvent {
   toolCalls: PendingToolCall[];
 }
 
+/**
+ * Request for client-side tool execution.
+ * Emitted by server-SDK when a tool has no server handler registered.
+ * Client should execute the tools and submit results via `continueWithToolResults(executionId, results)`.
+ */
+export interface ClientToolRequestEvent {
+  type: 'client-tool-request';
+  /**
+   * Unique execution ID for this trigger execution.
+   * Include this when sending tool results back to continue the execution.
+   */
+  executionId: string;
+  toolCalls: PendingToolCall[];
+  /**
+   * Server tool results already executed in this round.
+   * When mixed server+client tools are requested, the server executes its tools
+   * first and includes results here. Client must include these when continuing.
+   */
+  serverToolResults?: ToolResult[];
+}
+
 /** Result from tool execution (consumer's response to tool-request) */
 export interface ToolResult {
   toolCallId: string;
@@ -391,6 +423,7 @@ export type StreamEvent =
   | BlockEndEvent
   | ResourceUpdateEvent
   | ToolRequestEvent
+  | ClientToolRequestEvent
   | FileAvailableEvent;
 
 // =============================================================================

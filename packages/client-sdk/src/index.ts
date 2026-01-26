@@ -3,6 +3,9 @@ export {
   type OctavusChatOptions,
   type ChatStatus,
   type UserMessageInput,
+  type ClientToolContext,
+  type ClientToolHandler,
+  type InteractiveTool,
 } from './chat';
 
 export { uploadFiles, type UploadFilesOptions, type UploadUrlsResponse } from './files';
@@ -19,7 +22,10 @@ export {
   type ConnectionState,
   type ConnectionStateListener,
   type HttpTransportOptions,
-  type TriggerRequestOptions,
+  type HttpRequestOptions,
+  type HttpRequest,
+  type TriggerRequest,
+  type ContinueRequest,
   type SocketLike,
   type SocketTransportOptions,
 } from './transports';

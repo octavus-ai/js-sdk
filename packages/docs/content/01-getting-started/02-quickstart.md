@@ -106,7 +106,8 @@ import { toSSEStream } from '@octavus/server-sdk';
 import { octavus } from '@/lib/octavus';
 
 export async function POST(request: Request) {
-  const { sessionId, triggerName, input } = await request.json();
+  const body = await request.json();
+  const { sessionId, ...payload } = body;
 
   // Attach to session with tool handlers
   const session = octavus.agentSessions.attach(sessionId, {
@@ -131,8 +132,8 @@ export async function POST(request: Request) {
     },
   });
 
-  // Trigger the action and convert to SSE stream
-  const events = session.trigger(triggerName, input);
+  // Execute the request and convert to SSE stream
+  const events = session.execute(payload, { signal: request.signal });
 
   // Return as streaming response
   return new Response(toSSEStream(events), {
@@ -169,11 +170,12 @@ export function Chat({ sessionId }: ChatProps) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        triggerRequest: (triggerName, input) =>
+        request: (payload, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, triggerName, input }),
+            body: JSON.stringify({ sessionId, ...payload }),
+            signal: options?.signal,
           }),
       }),
     [sessionId],
@@ -307,3 +309,4 @@ Now that you have a basic integration working:
 - [Learn about the protocol](/docs/protocol/overview) to define custom agent behavior
 - [Explore the Server SDK](/docs/server-sdk/overview) for advanced backend features
 - [Build rich UIs](/docs/client-sdk/overview) with the Client SDK
+- [Handle tools on the client](/docs/client-sdk/client-tools) for interactive UIs and browser APIs

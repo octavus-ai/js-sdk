@@ -14,6 +14,9 @@ import {
   type FileReference,
   type UploadFilesOptions,
   type UploadUrlsResponse,
+  type ClientToolContext,
+  type ClientToolHandler,
+  type InteractiveTool,
 } from '@octavus/client-sdk';
 
 export type {
@@ -23,6 +26,9 @@ export type {
   FileReference,
   UploadFilesOptions,
   UploadUrlsResponse,
+  ClientToolContext,
+  ClientToolHandler,
+  InteractiveTool,
 };
 
 export interface UseOctavusChatReturn {
@@ -50,6 +56,25 @@ export interface UseOctavusChatReturn {
    * Connection error if `connectionState` is 'error'.
    */
   connectionError: Error | undefined;
+  /**
+   * Pending interactive tool calls keyed by tool name.
+   * Each tool has bound `submit()` and `cancel()` methods.
+   *
+   * @example
+   * ```tsx
+   * const feedbackTools = pendingClientTools['request-feedback'] ?? [];
+   *
+   * {feedbackTools.map(tool => (
+   *   <FeedbackModal
+   *     key={tool.toolCallId}
+   *     {...tool.args}
+   *     onSubmit={(result) => tool.submit(result)}
+   *     onCancel={() => tool.cancel()}
+   *   />
+   * ))}
+   * ```
+   */
+  pendingClientTools: Record<string, InteractiveTool[]>;
   /**
    * Trigger the agent and optionally add a user message to the chat.
    *
@@ -117,11 +142,12 @@ export interface UseOctavusChatReturn {
  * function Chat({ sessionId }) {
  *   const transport = useMemo(
  *     () => createHttpTransport({
- *       triggerRequest: (triggerName, input) =>
+ *       request: (payload, options) =>
  *         fetch('/api/trigger', {
  *           method: 'POST',
  *           headers: { 'Content-Type': 'application/json' },
- *           body: JSON.stringify({ sessionId, triggerName, input }),
+ *           body: JSON.stringify({ sessionId, ...payload }),
+ *           signal: options?.signal,
  *         }),
  *     }),
  *     [sessionId],
@@ -193,10 +219,16 @@ export function useOctavusChat(options: OctavusChatOptions): UseOctavusChatRetur
   const getMessagesSnapshot = useCallback(() => chat.messages, [chat]);
   const getStatusSnapshot = useCallback(() => chat.status, [chat]);
   const getErrorSnapshot = useCallback(() => chat.error, [chat]);
+  const getPendingClientToolsSnapshot = useCallback(() => chat.pendingClientTools, [chat]);
 
   const messages = useSyncExternalStore(subscribe, getMessagesSnapshot, getMessagesSnapshot);
   const status = useSyncExternalStore(subscribe, getStatusSnapshot, getStatusSnapshot);
   const error = useSyncExternalStore(subscribe, getErrorSnapshot, getErrorSnapshot);
+  const pendingClientTools = useSyncExternalStore(
+    subscribe,
+    getPendingClientToolsSnapshot,
+    getPendingClientToolsSnapshot,
+  );
 
   const socketTransport = isSocketTransport(transport) ? transport : null;
   const [connectionState, setConnectionState] = useState<ConnectionState | undefined>(
@@ -249,6 +281,7 @@ export function useOctavusChat(options: OctavusChatOptions): UseOctavusChatRetur
     error,
     connectionState,
     connectionError,
+    pendingClientTools,
     send,
     stop,
     connect: socketTransport ? connect : undefined,

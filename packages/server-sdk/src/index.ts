@@ -15,7 +15,15 @@ export {
   type FileUploadInfo,
   type UploadUrlsResponse,
 } from '@/files.js';
-export { AgentSession, toSSEStream, type SessionConfig, type TriggerOptions } from '@/session.js';
+export {
+  AgentSession,
+  toSSEStream,
+  type SessionConfig,
+  type TriggerOptions,
+  type SessionRequest,
+  type TriggerRequest,
+  type ContinueRequest,
+} from '@/session.js';
 export { Resource } from '@/resource.js';
 export { ApiError } from '@/api-error.js';
 

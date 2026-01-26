@@ -1,4 +1,4 @@
-import { safeParseStreamEvent, type StreamEvent } from '@octavus/core';
+import { safeParseStreamEvent, type StreamEvent, type ToolResult } from '@octavus/core';
 import type { SocketTransport, ConnectionState, ConnectionStateListener } from './types';
 
 // =============================================================================
@@ -282,6 +282,7 @@ export function createSocketTransport(options: SocketTransportOptions): SocketTr
       eventQueue = [];
       isStreaming = true;
 
+      // Note: clientToolResults not sent here - socket uses sendClientToolResults() for continuation
       socket!.send(
         JSON.stringify({
           type: 'trigger',
@@ -306,6 +307,33 @@ export function createSocketTransport(options: SocketTransportOptions): SocketTr
       if (eventResolver) {
         eventResolver(null);
         eventResolver = null;
+      }
+    },
+
+    /**
+     * Continue execution with tool results after client-side tool handling.
+     * @param executionId - The execution ID from the client-tool-request event
+     * @param toolResults - All tool results (server + client) to send
+     */
+    async *continueWithToolResults(executionId: string, toolResults: ToolResult[]) {
+      await ensureConnected();
+
+      eventQueue = [];
+      isStreaming = true;
+
+      socket!.send(
+        JSON.stringify({
+          type: 'continue',
+          executionId,
+          toolResults,
+        }),
+      );
+
+      while (true) {
+        const event = await nextEvent();
+        if (event === null) break;
+        yield event;
+        if (event.type === 'finish' || event.type === 'error') break;
       }
     },
   };

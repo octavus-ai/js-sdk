@@ -81,6 +81,7 @@ export type {
   ResourceUpdateEvent,
   PendingToolCall,
   ToolRequestEvent,
+  ClientToolRequestEvent,
   ToolResult,
   // File Events (skill execution)
   GeneratedFile,

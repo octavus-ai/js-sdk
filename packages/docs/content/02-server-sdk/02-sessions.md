@@ -90,17 +90,18 @@ const session = client.agentSessions.attach(sessionId, {
 });
 ```
 
-## Triggering Actions
+## Executing Requests
 
-Once attached, trigger actions on the session:
+Once attached, execute requests on the session using `execute()`:
 
 ```typescript
 import { toSSEStream } from '@octavus/server-sdk';
 
-// trigger() returns an async generator of events
-const events = session.trigger('user-message', {
-  USER_MESSAGE: 'How do I reset my password?',
-});
+// execute() handles both triggers and client tool continuations
+const events = session.execute(
+  { type: 'trigger', triggerName: 'user-message', input: { USER_MESSAGE: 'Hello!' } },
+  { signal: request.signal },
+);
 
 // Convert to SSE stream for HTTP responses
 return new Response(toSSEStream(events), {
@@ -108,13 +109,53 @@ return new Response(toSSEStream(events), {
 });
 ```
 
+### Request Types
+
+The `execute()` method accepts a discriminated union:
+
+```typescript
+type SessionRequest = TriggerRequest | ContinueRequest;
+
+// Start a new conversation turn
+interface TriggerRequest {
+  type: 'trigger';
+  triggerName: string;
+  input?: Record<string, unknown>;
+}
+
+// Continue after client-side tool handling
+interface ContinueRequest {
+  type: 'continue';
+  executionId: string;
+  toolResults: ToolResult[];
+}
+```
+
+This makes it easy to pass requests through from the client:
+
+```typescript
+// Simple passthrough from HTTP request body
+export async function POST(request: Request) {
+  const body = await request.json();
+  const { sessionId, ...payload } = body;
+
+  const session = client.agentSessions.attach(sessionId, {
+    tools: {
+      /* ... */
+    },
+  });
+  const events = session.execute(payload, { signal: request.signal });
+
+  return new Response(toSSEStream(events));
+}
+```
+
 ### Stop Support
 
 Pass an abort signal to allow clients to stop generation:
 
 ```typescript
-// In your API route handler
-const events = session.trigger(triggerName, input, {
+const events = session.execute(request, {
   signal: request.signal, // Forward the client's abort signal
 });
 ```
@@ -143,8 +184,8 @@ flowchart TD
     Configure tool handlers
     Configure resource watchers`"]
 
-    C -.- C1["`**session.trigger()**
-    Execute handler
+    C -.- C1["`**session.execute()**
+    Execute request
     Stream events
     Update state`"]
 

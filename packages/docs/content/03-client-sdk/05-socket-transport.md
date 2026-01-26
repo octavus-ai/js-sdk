@@ -155,24 +155,28 @@ function createSocketHandler() {
         return;
       }
 
-      if (msg.type === 'trigger') {
+      // Handle both trigger and continue messages
+      if (msg.type === 'trigger' || msg.type === 'continue') {
         // Create session lazily on first trigger
-        if (!session) {
+        if (!session && msg.type === 'trigger') {
           const sessionId = await client.agentSessions.create('your-agent-id', {
             // Initial input variables
             COMPANY_NAME: 'Acme Corp',
           });
           session = client.agentSessions.attach(sessionId, {
             tools: {
-              // Your tool handlers
+              // Server-side tool handlers only
+              // Tools without handlers are forwarded to the client
             },
           });
         }
 
+        if (!session) return;
+
         abortController = new AbortController();
 
-        // Iterate events directly — no SSE parsing needed
-        const events = session.trigger(msg.triggerName, msg.input, {
+        // execute() handles both triggers and continuations
+        const events = session.execute(msg, {
           signal: abortController.signal,
         });
 
@@ -256,7 +260,7 @@ sockServer.on('connection', (conn) => {
     if (msg.type === 'init') {
       session = client.agentSessions.attach(msg.sessionId, {
         tools: {
-          /* ... */
+          // Server-side tool handlers
         },
       });
       return;
@@ -281,8 +285,16 @@ sockServer.on('connection', (conn) => {
       return;
     }
 
-    if (msg.type === 'trigger') {
-      // ... handle trigger (same as server-managed pattern)
+    // Handle both trigger and continue messages
+    if (msg.type === 'trigger' || msg.type === 'continue') {
+      abortController = new AbortController();
+
+      // execute() handles both triggers and continuations
+      const events = session.execute(msg, { signal: abortController.signal });
+
+      for await (const event of events) {
+        conn.write(JSON.stringify(event));
+      }
     }
   }
 });
@@ -505,8 +517,11 @@ const SockJS: typeof import('sockjs-client') = require('sockjs-client');
 // Initialize session (only for client-provided sessionId pattern)
 { type: 'init', sessionId: string }
 
-// Trigger an action
+// Trigger an action (start a new conversation turn)
 { type: 'trigger', triggerName: string, input?: Record<string, unknown> }
+
+// Continue execution (after client-side tool handling)
+{ type: 'continue', executionId: string, toolResults: ToolResult[] }
 
 // Stop current stream
 { type: 'stop' }
@@ -518,12 +533,18 @@ The server sends Octavus `StreamEvent` objects as JSON. See [Streaming Events](/
 
 ```typescript
 // Examples
-{ type: 'start', messageId: '...' }
+{ type: 'start', messageId: '...', executionId: '...' }
 { type: 'text-delta', id: '...', delta: 'Hello' }
 { type: 'tool-input-start', toolCallId: '...', toolName: 'get-user' }
 { type: 'finish', finishReason: 'stop' }
 { type: 'error', errorType: 'internal_error', message: 'Something went wrong', source: 'platform', retryable: false }
+
+// Client tool request (tools without server handlers)
+{ type: 'client-tool-request', executionId: '...', toolCalls: [...], serverToolResults: [...] }
+{ type: 'finish', finishReason: 'client-tool-calls', executionId: '...' }
 ```
+
+When a `client-tool-request` event is received, the client handles the tools and sends a `continue` message to resume.
 
 ## Full Example
 

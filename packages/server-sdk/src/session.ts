@@ -12,6 +12,27 @@ import { parseApiError } from '@/api-error.js';
 import type { ApiClientConfig } from '@/base-api-client.js';
 import type { Resource } from '@/resource.js';
 
+// =============================================================================
+// Request Types
+// =============================================================================
+
+/** Start a new trigger execution */
+export interface TriggerRequest {
+  type: 'trigger';
+  triggerName: string;
+  input?: Record<string, unknown>;
+}
+
+/** Continue execution after client-side tool handling */
+export interface ContinueRequest {
+  type: 'continue';
+  executionId: string;
+  toolResults: ToolResult[];
+}
+
+/** All request types supported by the session */
+export type SessionRequest = TriggerRequest | ContinueRequest;
+
 /**
  * Converts an async iterable of stream events to an SSE-formatted ReadableStream.
  * Use this when you need to return an SSE response (e.g., HTTP endpoints).
@@ -81,49 +102,76 @@ export class AgentSession {
   }
 
   /**
-   * Trigger an agent action and stream the response as parsed events.
+   * Execute a session request and stream the response.
    *
-   * This method:
-   * 1. POSTs to the platform trigger endpoint
-   * 2. Yields parsed stream events to the consumer
-   * 3. When tool-request event is received: executes tools locally
-   * 4. POSTs a new request with toolResults to continue
-   * 5. Repeats until done (no more tool requests)
+   * This is the unified method that handles both triggers and continuations.
+   * Use this when you want to pass through requests from the client directly.
    *
-   * @param triggerName - The trigger name defined in the agent's protocol
-   * @param triggerInput - Input parameters for the trigger
+   * @param request - The request (check `request.type` for the kind)
    * @param options - Optional configuration including abort signal
    *
-   * @example
+   * @example HTTP route (simple passthrough)
    * ```typescript
-   * // For sockets: iterate events directly
-   * for await (const event of session.trigger('user-message', input)) {
-   *   conn.write(JSON.stringify(event));
-   * }
+   * const events = session.execute(body, { signal: request.signal });
+   * return new Response(toSSEStream(events));
+   * ```
    *
-   * // For HTTP: convert to SSE stream with abort support
-   * const events = session.trigger('user-message', input, { signal: request.signal });
-   * return new Response(toSSEStream(events), {
-   *   headers: { 'Content-Type': 'text/event-stream' },
+   * @example WebSocket handler
+   * ```typescript
+   * socket.on('message', (data) => {
+   *   const events = session.execute(data);
+   *   for await (const event of events) {
+   *     socket.send(JSON.stringify(event));
+   *   }
    * });
    * ```
    */
-  async *trigger(
-    triggerName: string,
-    triggerInput?: Record<string, unknown>,
-    options?: TriggerOptions,
+  async *execute(request: SessionRequest, options?: TriggerOptions): AsyncGenerator<StreamEvent> {
+    if (request.type === 'continue') {
+      yield* this.executeStream(
+        { executionId: request.executionId, toolResults: request.toolResults },
+        options?.signal,
+      );
+    } else {
+      yield* this.executeStream(
+        { triggerName: request.triggerName, input: request.input },
+        options?.signal,
+      );
+    }
+  }
+
+  getSessionId(): string {
+    return this.sessionId;
+  }
+
+  private async *executeStream(
+    payload: {
+      triggerName?: string;
+      input?: Record<string, unknown>;
+      executionId?: string;
+      toolResults?: ToolResult[];
+    },
+    signal?: AbortSignal,
   ): AsyncGenerator<StreamEvent> {
-    let toolResults: ToolResult[] | undefined;
+    let toolResults = payload.toolResults;
+    let executionId = payload.executionId;
     let continueLoop = true;
 
     while (continueLoop) {
       // Check if aborted before making request
-      if (options?.signal?.aborted) {
+      if (signal?.aborted) {
         yield { type: 'finish', finishReason: 'stop' };
         return;
       }
 
-      // Make request to platform (with toolResults on continuation)
+      // Build request body - only include defined fields
+      const body: Record<string, unknown> = {};
+      if (payload.triggerName !== undefined) body.triggerName = payload.triggerName;
+      if (payload.input !== undefined) body.input = payload.input;
+      if (executionId !== undefined) body.executionId = executionId;
+      if (toolResults !== undefined) body.toolResults = toolResults;
+
+      // Make request to platform
       let response: Response;
       try {
         response = await fetch(
@@ -131,12 +179,8 @@ export class AgentSession {
           {
             method: 'POST',
             headers: this.config.getHeaders(),
-            body: JSON.stringify({
-              triggerName,
-              input: triggerInput,
-              toolResults,
-            }),
-            signal: options?.signal,
+            body: JSON.stringify(body),
+            signal,
           },
         );
       } catch (err) {
@@ -159,7 +203,7 @@ export class AgentSession {
         return;
       }
 
-      // Reset tool results for next iteration
+      // Reset tool results for next iteration (executionId persists through the loop)
       toolResults = undefined;
 
       // Read and process the SSE stream
@@ -172,7 +216,7 @@ export class AgentSession {
       let streamDone = false;
       while (!streamDone) {
         // Check if aborted during stream reading
-        if (options?.signal?.aborted) {
+        if (signal?.aborted) {
           reader.releaseLock();
           yield { type: 'finish', finishReason: 'stop' };
           return;
@@ -212,7 +256,12 @@ export class AgentSession {
               }
               const event = parsed.data;
 
-              // Handle tool-request - execute tools and prepare continuation
+              // Capture executionId from start event
+              if (event.type === 'start' && event.executionId) {
+                executionId = event.executionId;
+              }
+
+              // Handle tool-request - split into server and client tools
               if (event.type === 'tool-request') {
                 pendingToolCalls = event.toolCalls;
                 // Don't forward tool-request to consumer
@@ -228,12 +277,10 @@ export class AgentSession {
                 continue;
               }
 
-              // Handle resource updates
               if (event.type === 'resource-update') {
                 this.handleResourceUpdate(event.name, event.value);
               }
 
-              // Yield all other events to the consumer
               yield event;
             } catch {
               // Skip malformed JSON
@@ -243,26 +290,20 @@ export class AgentSession {
       }
 
       // Check if aborted before tool execution
-      if (options?.signal?.aborted) {
+      if (signal?.aborted) {
         yield { type: 'finish', finishReason: 'stop' };
         return;
       }
 
-      // If we have pending tool calls, execute them and continue
+      // If we have pending tool calls, split into server and client tools
       if (pendingToolCalls && pendingToolCalls.length > 0) {
-        toolResults = await Promise.all(
-          pendingToolCalls.map(async (tc): Promise<ToolResult> => {
-            const handler = this.toolHandlers[tc.toolName];
-            if (!handler) {
-              return {
-                toolCallId: tc.toolCallId,
-                toolName: tc.toolName,
-                error: `No handler for tool: ${tc.toolName}`,
-                outputVariable: tc.outputVariable,
-                blockIndex: tc.blockIndex,
-              };
-            }
+        const serverTools = pendingToolCalls.filter((tc) => this.toolHandlers[tc.toolName]);
+        const clientTools = pendingToolCalls.filter((tc) => !this.toolHandlers[tc.toolName]);
 
+        const serverResults = await Promise.all(
+          serverTools.map(async (tc): Promise<ToolResult> => {
+            // Handler is guaranteed to exist since we filtered by handler presence
+            const handler = this.toolHandlers[tc.toolName]!;
             try {
               const result = await handler(tc.args);
               return {
@@ -284,9 +325,8 @@ export class AgentSession {
           }),
         );
 
-        // Emit tool-output events immediately so UI updates right away
-        // (before making continuation request)
-        for (const tr of toolResults) {
+        // Emit tool-output events for server tools immediately
+        for (const tr of serverResults) {
           if (tr.error) {
             yield { type: 'tool-output-error', toolCallId: tr.toolCallId, error: tr.error };
           } else {
@@ -294,16 +334,30 @@ export class AgentSession {
           }
         }
 
-        // Continue loop with tool results
+        // If there are client tools, emit client-tool-request and stop the loop
+        if (clientTools.length > 0) {
+          if (!executionId) {
+            yield createInternalErrorEvent('Missing executionId for client-tool-request');
+            return;
+          }
+          // Include executionId and server results in event
+          yield {
+            type: 'client-tool-request',
+            executionId,
+            toolCalls: clientTools,
+            serverToolResults: serverResults.length > 0 ? serverResults : undefined,
+          };
+          yield { type: 'finish', finishReason: 'client-tool-calls', executionId };
+          continueLoop = false;
+        } else {
+          // All tools handled server-side, continue loop
+          toolResults = serverResults;
+        }
       } else {
         // No pending tools, we're done
         continueLoop = false;
       }
     }
-  }
-
-  getSessionId(): string {
-    return this.sessionId;
   }
 
   private handleResourceUpdate(name: string, value: unknown): void {

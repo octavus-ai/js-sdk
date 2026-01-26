@@ -114,12 +114,13 @@ import { toSSEStream } from '@octavus/server-sdk';
 import { octavus } from '@/lib/octavus';
 
 export async function POST(request: Request) {
-  const { sessionId, triggerName, input } = await request.json();
+  const body = await request.json();
+  const { sessionId, ...payload } = body;
 
   // Attach to the session with tool handlers
   const session = octavus.agentSessions.attach(sessionId, {
     tools: {
-      // Tool handlers run on YOUR server, not Octavus
+      // Server-side tool handlers run on YOUR server, not Octavus
       'get-user-account': async (args) => {
         const userId = args.userId as string;
         // Fetch from your database
@@ -143,11 +144,14 @@ export async function POST(request: Request) {
           estimatedResponse: '24 hours',
         };
       },
+
+      // Tools without handlers here are forwarded to the client
+      // See Client Tools docs for handling on frontend
     },
   });
 
-  // trigger() returns parsed events, toSSEStream() converts to SSE format
-  const events = session.trigger(triggerName, input);
+  // execute() handles both triggers and client tool continuations
+  const events = session.execute(payload, { signal: request.signal });
 
   return new Response(toSSEStream(events), {
     headers: {
@@ -159,7 +163,7 @@ export async function POST(request: Request) {
 }
 ```
 
-**Protocol Note:** Tool names and arguments are defined in your agent's protocol YAML. The tool handlers here must match those definitions.
+**Protocol Note:** Tool names and arguments are defined in your agent's protocol YAML. The tool handlers here must match those definitions. Tools without server handlers are forwarded to the client.
 
 ## Step 7: Build the Chat Component
 
@@ -181,11 +185,12 @@ export function Chat({ sessionId }: ChatProps) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        triggerRequest: (triggerName, input) =>
+        request: (payload, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, triggerName, input }),
+            body: JSON.stringify({ sessionId, ...payload }),
+            signal: options?.signal,
           }),
       }),
     [sessionId],

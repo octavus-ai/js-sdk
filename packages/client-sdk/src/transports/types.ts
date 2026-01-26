@@ -1,4 +1,4 @@
-import type { StreamEvent } from '@octavus/core';
+import type { StreamEvent, ToolResult } from '@octavus/core';
 
 // =============================================================================
 // Base Transport Interface
@@ -18,6 +18,14 @@ export interface Transport {
    * @param input - Input parameters for variable substitution
    */
   trigger(triggerName: string, input?: Record<string, unknown>): AsyncIterable<StreamEvent>;
+
+  /**
+   * Continue execution with tool results after client-side tool handling.
+   *
+   * @param executionId - The execution ID from the client-tool-request event
+   * @param results - All tool results (server + client) to send
+   */
+  continueWithToolResults(executionId: string, results: ToolResult[]): AsyncIterable<StreamEvent>;
 
   /** Stop the current stream. Safe to call when no stream is active. */
   stop(): void;
