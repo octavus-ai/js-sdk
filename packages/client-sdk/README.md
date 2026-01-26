@@ -21,11 +21,11 @@ import { OctavusChat, createHttpTransport } from '@octavus/client-sdk';
 
 // Create transport
 const transport = createHttpTransport({
-  request: (req, options) =>
+  request: (payload, options) =>
     fetch('/api/trigger', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, ...req }),
+      body: JSON.stringify({ sessionId, ...payload }),
       signal: options?.signal,
     }),
 });
@@ -56,11 +56,11 @@ Best for Next.js, Express, and HTTP-based applications:
 import { createHttpTransport } from '@octavus/client-sdk';
 
 const transport = createHttpTransport({
-  request: (req, options) =>
+  request: (payload, options) =>
     fetch('/api/trigger', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, ...req }),
+      body: JSON.stringify({ sessionId, ...payload }),
       signal: options?.signal,
     }),
 });
