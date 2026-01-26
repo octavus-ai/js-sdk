@@ -106,10 +106,10 @@ export function createSocketHandler() {
         return;
       }
 
-      // Handle trigger
-      if (msg.type === 'trigger') {
+      // Handle trigger and continue messages
+      if (msg.type === 'trigger' || msg.type === 'continue') {
         // Create session lazily on first trigger
-        if (!session) {
+        if (!session && msg.type === 'trigger') {
           const sessionId = await octavus.agentSessions.create(AGENT_ID, {
             // Initial input variables from your protocol
             COMPANY_NAME: 'Acme Corp',
@@ -117,6 +117,7 @@ export function createSocketHandler() {
 
           session = octavus.agentSessions.attach(sessionId, {
             tools: {
+              // Server-side tool handlers
               'get-user-account': async () => {
                 // Fetch from your database
                 return { name: 'Demo User', plan: 'pro' };
@@ -124,14 +125,17 @@ export function createSocketHandler() {
               'create-support-ticket': async () => {
                 return { ticketId: 'TKT-123', estimatedResponse: '24h' };
               },
+              // Tools without handlers are forwarded to the client
             },
           });
         }
 
+        if (!session) return;
+
         abortController = new AbortController();
 
-        // trigger() returns parsed events — iterate directly
-        const events = session.trigger(msg.triggerName, msg.input);
+        // execute() handles both triggers and continuations
+        const events = session.execute(msg, { signal: abortController.signal });
 
         try {
           for await (const event of events) {
@@ -358,17 +362,20 @@ conn.write(
 
 ## Protocol Integration
 
-### Triggers
+### Messages
 
-The socket handler receives trigger messages and forwards them to Octavus:
+The socket handler receives messages and forwards them to Octavus:
 
 ```typescript
-// Client sends:
+// Client sends trigger:
 { type: 'trigger', triggerName: 'user-message', input: { USER_MESSAGE: 'Hello' } }
 
-// Server handles:
-if (msg.type === 'trigger') {
-  const events = session.trigger(msg.triggerName, msg.input);
+// Client sends continuation (after client tool handling):
+{ type: 'continue', executionId: '...', toolResults: [...] }
+
+// Server handles both:
+if (msg.type === 'trigger' || msg.type === 'continue') {
+  const events = session.execute(msg);
   for await (const event of events) {
     conn.write(JSON.stringify(event));
   }
@@ -377,7 +384,7 @@ if (msg.type === 'trigger') {
 
 ### Tools
 
-Tools are defined in your agent's protocol and handled server-side:
+Tools are defined in your agent's protocol. Server-side tools have handlers, client-side tools don't:
 
 ```yaml
 # protocol.yaml
@@ -387,17 +394,24 @@ tools:
     parameters:
       userId:
         type: string
+
+  get-browser-location:
+    description: Get user's location from browser
+    # No server handler - handled on client
 ```
 
 ```typescript
-// Server tool handler
+// Server tool handlers (only for server tools)
 tools: {
   'get-user-account': async (args) => {
     const userId = args.userId as string;
     return await db.users.find(userId);
   },
+  // get-browser-location has no handler - forwarded to client
 }
 ```
+
+See [Client Tools](/docs/client-sdk/client-tools) for handling tools on the frontend.
 
 ## Meteor Integration Note
 

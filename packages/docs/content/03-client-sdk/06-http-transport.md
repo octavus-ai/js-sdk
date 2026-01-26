@@ -28,11 +28,11 @@ function Chat({ sessionId }: { sessionId: string }) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        triggerRequest: (triggerName, input, options) =>
+        request: (req, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, triggerName, input }),
+            body: JSON.stringify({ sessionId, ...req }),
             signal: options?.signal,
           }),
       }),
@@ -61,7 +61,8 @@ const client = new OctavusClient({
 });
 
 export async function POST(request: Request) {
-  const { sessionId, triggerName, input } = await request.json();
+  const body = await request.json();
+  const { sessionId, ...req } = body;
 
   const session = client.agentSessions.attach(sessionId, {
     tools: {
@@ -71,8 +72,8 @@ export async function POST(request: Request) {
     },
   });
 
-  // trigger() returns an async generator, toSSEStream() converts to SSE format
-  const events = session.trigger(triggerName, input, { signal: request.signal });
+  // execute() handles both triggers and client tool continuations
+  const events = session.execute(req, { signal: request.signal });
 
   return new Response(toSSEStream(events), {
     headers: {
@@ -197,7 +198,7 @@ return (
 );
 ```
 
-> **Important**: For stop to work end-to-end, pass the `options.signal` to your `fetch()` call and forward `request.signal` to `session.trigger()` on the server.
+> **Important**: For stop to work end-to-end, pass the `options.signal` to your `fetch()` call and forward `request.signal` to `session.execute()` on the server.
 
 ## Express Server
 
@@ -208,21 +209,25 @@ import express from 'express';
 import { OctavusClient, toSSEStream } from '@octavus/server-sdk';
 
 const app = express();
+app.use(express.json());
+
 const client = new OctavusClient({
   baseUrl: process.env.OCTAVUS_API_URL!,
   apiKey: process.env.OCTAVUS_API_KEY!,
 });
 
 app.post('/api/trigger', async (req, res) => {
-  const { sessionId, triggerName, input } = req.body;
+  const { sessionId, ...request } = req.body;
 
   const session = client.agentSessions.attach(sessionId, {
     tools: {
-      // Your tool handlers
+      // Server-side tool handlers only
+      // Tools without handlers are forwarded to the client
     },
   });
 
-  const events = session.trigger(triggerName, input);
+  // execute() handles both triggers and continuations
+  const events = session.execute(request);
   const stream = toSSEStream(events);
 
   // Set SSE headers
@@ -250,31 +255,77 @@ app.post('/api/trigger', async (req, res) => {
 
 ```typescript
 interface HttpTransportOptions {
-  triggerRequest: (
-    triggerName: string,
-    input?: Record<string, unknown>,
-    options?: TriggerRequestOptions,
-  ) => Promise<Response>;
+  // Single request handler for both triggers and continuations
+  request: (request: HttpRequest, options?: HttpRequestOptions) => Promise<Response>;
 }
 
-interface TriggerRequestOptions {
+interface HttpRequestOptions {
   signal?: AbortSignal;
 }
+
+// Discriminated union for request types
+type HttpRequest = TriggerRequest | ContinueRequest;
+
+// Start a new conversation turn
+interface TriggerRequest {
+  type: 'trigger';
+  triggerName: string;
+  input?: Record<string, unknown>;
+}
+
+// Continue after client-side tool handling
+interface ContinueRequest {
+  type: 'continue';
+  executionId: string;
+  toolResults: ToolResult[];
+}
+```
+
+The `request` function receives a discriminated union. Spread the request onto your payload:
+
+```typescript
+request: (req, options) =>
+  fetch('/api/trigger', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionId, ...req }), // Spread req to include type and fields
+    signal: options?.signal,
+  });
 ```
 
 ## Protocol
 
 ### Request Format
 
-The `triggerRequest` function should send a POST request with:
+The `request` function receives a discriminated union with `type` to identify the request kind:
+
+**Trigger Request** (start a new turn):
 
 ```json
 {
   "sessionId": "sess_abc123",
+  "type": "trigger",
   "triggerName": "user-message",
   "input": {
     "USER_MESSAGE": "Hello"
   }
+}
+```
+
+**Continue Request** (after client tool handling):
+
+```json
+{
+  "sessionId": "sess_abc123",
+  "type": "continue",
+  "executionId": "exec_xyz789",
+  "toolResults": [
+    {
+      "toolCallId": "call_abc",
+      "toolName": "get-browser-location",
+      "result": { "lat": 40.7128, "lng": -74.006 }
+    }
+  ]
 }
 ```
 
@@ -283,7 +334,7 @@ The `triggerRequest` function should send a POST request with:
 The server responds with an SSE stream:
 
 ```
-data: {"type":"start","messageId":"msg_xyz"}
+data: {"type":"start","messageId":"msg_xyz","executionId":"exec_xyz789"}
 
 data: {"type":"text-delta","id":"msg_xyz","delta":"Hello"}
 
@@ -294,11 +345,24 @@ data: {"type":"finish","finishReason":"stop"}
 data: [DONE]
 ```
 
+If client tools are needed, the stream pauses with a `client-tool-request` event:
+
+```
+data: {"type":"client-tool-request","executionId":"exec_xyz789","toolCalls":[...]}
+
+data: {"type":"finish","finishReason":"client-tool-calls","executionId":"exec_xyz789"}
+
+data: [DONE]
+```
+
+The client handles the tools and sends a `continue` request to resume.
+
 See [Streaming Events](/docs/server-sdk/streaming#event-types) for the full list of event types.
 
 ## Next Steps
 
 - [Quick Start](/docs/getting-started/quickstart) — Complete Next.js integration guide
+- [Client Tools](/docs/client-sdk/client-tools) — Handling tools on the client side
 - [Messages](/docs/client-sdk/messages) — Working with message state
 - [Streaming](/docs/client-sdk/streaming) — Building streaming UIs
 - [Error Handling](/docs/client-sdk/error-handling) — Handling errors with type guards

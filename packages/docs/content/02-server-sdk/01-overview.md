@@ -83,9 +83,11 @@ All responses stream in real-time:
 ```typescript
 import { toSSEStream } from '@octavus/server-sdk';
 
-// trigger() returns an async generator of events
-const events = session.trigger('user-message', {
-  USER_MESSAGE: 'Hello!',
+// execute() returns an async generator of events
+const events = session.execute({
+  type: 'trigger',
+  triggerName: 'user-message',
+  input: { USER_MESSAGE: 'Hello!' },
 });
 
 // Convert to SSE stream for HTTP responses
@@ -156,15 +158,29 @@ interface UISessionState {
 
 ### AgentSession
 
-Handles triggering and streaming for a specific session.
+Handles request execution and streaming for a specific session.
 
 ```typescript
 class AgentSession {
-  // Trigger an action and stream parsed events
-  trigger(triggerName: string, input?: Record<string, unknown>): AsyncGenerator<StreamEvent>;
+  // Execute a request and stream parsed events
+  execute(request: SessionRequest, options?: TriggerOptions): AsyncGenerator<StreamEvent>;
 
   // Get the session ID
   getSessionId(): string;
+}
+
+type SessionRequest = TriggerRequest | ContinueRequest;
+
+interface TriggerRequest {
+  type: 'trigger';
+  triggerName: string;
+  input?: Record<string, unknown>;
+}
+
+interface ContinueRequest {
+  type: 'continue';
+  executionId: string;
+  toolResults: ToolResult[];
 }
 
 // Helper to convert events to SSE stream

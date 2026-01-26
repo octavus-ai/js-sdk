@@ -5,11 +5,25 @@ description: Implementing tool handlers with the Server SDK.
 
 # Tools
 
-Tools extend what agents can do. In Octavus, tools execute on your server, giving you full control over data access and authentication.
+Tools extend what agents can do. In Octavus, tools can execute either on your server or on the client side.
 
-## Why Tools Run on Your Server
+## Server Tools vs Client Tools
 
-Unlike traditional AI platforms where tools run in a sandbox, Octavus tools execute in your backend:
+| Location   | Use Case                                          | Registration                            |
+| ---------- | ------------------------------------------------- | --------------------------------------- |
+| **Server** | Database queries, API calls, sensitive operations | Register handler in `attach()`          |
+| **Client** | Browser APIs, interactive UIs, confirmations      | No server handler (forwarded to client) |
+
+When the Server SDK encounters a tool call:
+
+1. **Handler exists** → Execute on server, continue automatically
+2. **No handler** → Forward to client via `client-tool-request` event
+
+For client-side tool handling, see [Client Tools](/docs/client-sdk/client-tools).
+
+## Why Server Tools
+
+Server-side tools give you full control:
 
 - ✅ **Full data access** — Query your database directly
 - ✅ **Your authentication** — Use your existing auth context
@@ -146,22 +160,29 @@ sequenceDiagram
     participant LLM
     participant Platform as Octavus Platform
     participant SDK as Server SDK
-    participant UI as Your Frontend
+    participant Client as Client SDK
 
     LLM->>Platform: 1. Decides to call tool
-    Platform-->>UI: tool-input-start, tool-input-delta
-    Platform-->>UI: tool-input-available
+    Platform-->>Client: tool-input-start, tool-input-delta
+    Platform-->>Client: tool-input-available
     Platform-->>SDK: 2. tool-request (stream pauses)
 
-    Note over SDK: 3. Execute handler<br/>tools['get-user']()
+    alt Has server handler
+        Note over SDK: 3a. Execute handler<br/>tools['get-user']()
+        SDK-->>Client: tool-output-available
+        SDK->>Platform: Continue with results
+    else No server handler
+        SDK-->>Client: 3b. client-tool-request
+        Note over Client: Execute client tool<br/>or show interactive UI
+        Client->>SDK: Tool results
+        SDK->>Platform: Continue with results
+    end
 
-    SDK-->>UI: 4. tool-output-available
-    SDK->>Platform: 5. POST /trigger with results
-    Platform->>LLM: 6. Continue with results
+    Platform->>LLM: 4. Process results
     LLM-->>Platform: Response
-    Platform-->>UI: text-delta events
+    Platform-->>Client: text-delta events
 
-    Note over LLM,UI: 7. Repeat if more tools needed
+    Note over LLM,Client: 5. Repeat if more tools needed
 ```
 
 ## Accessing Request Context
@@ -173,6 +194,9 @@ import { toSSEStream } from '@octavus/server-sdk';
 
 // In your API route
 export async function POST(request: Request) {
+  const body = await request.json();
+  const { sessionId, ...req } = body;
+
   const authToken = request.headers.get('Authorization');
   const user = await validateToken(authToken);
 
@@ -190,10 +214,11 @@ export async function POST(request: Request) {
           createdBy: user.email,
         });
       },
+      // Tools without handlers here are forwarded to the client
     },
   });
 
-  const events = session.trigger(triggerName, input);
+  const events = session.execute(req, { signal: request.signal });
   return new Response(toSSEStream(events));
 }
 ```

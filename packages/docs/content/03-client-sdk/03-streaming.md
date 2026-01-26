@@ -12,7 +12,8 @@ The Client SDK provides real-time access to streaming content through the messag
 ```tsx
 const { messages, status, error } = useOctavusChat({ transport });
 
-// status: 'idle' | 'streaming' | 'error'
+// status: 'idle' | 'streaming' | 'error' | 'awaiting-input'
+// 'awaiting-input' occurs when interactive client tools need user action
 // Each message has status: 'streaming' | 'done'
 // Each part has its own status too
 ```
@@ -27,11 +28,12 @@ function Chat({ sessionId }: { sessionId: string }) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        triggerRequest: (triggerName, input) =>
+        request: (req, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, triggerName, input }),
+            body: JSON.stringify({ sessionId, ...req }),
+            signal: options?.signal,
           }),
       }),
     [sessionId],
@@ -148,6 +150,8 @@ function StatusIndicator({ status }: { status: ChatStatus }) {
       return null;
     case 'streaming':
       return <div>Agent is responding...</div>;
+    case 'awaiting-input':
+      return <div className="text-amber-500">Waiting for your input...</div>;
     case 'error':
       return <div className="text-red-500">Something went wrong</div>;
   }

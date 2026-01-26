@@ -89,11 +89,12 @@ function Chat({ sessionId }: { sessionId: string }) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        triggerRequest: (triggerName, input) =>
+        request: (req, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, triggerName, input }),
+            body: JSON.stringify({ sessionId, ...req }),
+            signal: options?.signal,
           }),
       }),
     [sessionId],
@@ -115,9 +116,11 @@ function Chat({ sessionId }: { sessionId: string }) {
 ### From Server SDK
 
 ```typescript
-// trigger() returns an async generator of events
-const events = session.trigger('user-message', {
-  USER_MESSAGE: 'Help me with billing',
+// execute() returns an async generator of events
+const events = session.execute({
+  type: 'trigger',
+  triggerName: 'user-message',
+  input: { USER_MESSAGE: 'Help me with billing' },
 });
 
 // Iterate events directly

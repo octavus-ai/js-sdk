@@ -9,14 +9,16 @@ All Octavus responses stream in real-time using Server-Sent Events (SSE). This e
 
 ## Stream Response
 
-When you trigger an action, you get an async generator of parsed events:
+When you execute a request, you get an async generator of parsed events:
 
 ```typescript
 import { toSSEStream } from '@octavus/server-sdk';
 
-// trigger() returns an async generator of StreamEvent
-const events = session.trigger('user-message', {
-  USER_MESSAGE: 'Hello!',
+// execute() returns an async generator of StreamEvent
+const events = session.execute({
+  type: 'trigger',
+  triggerName: 'user-message',
+  input: { USER_MESSAGE: 'Hello!' },
 });
 
 // For HTTP endpoints, convert to SSE stream
@@ -42,14 +44,15 @@ The stream emits various event types for lifecycle, text, reasoning, and tool in
 
 ```typescript
 // Stream started
-{ type: 'start', messageId: '...' }
+{ type: 'start', messageId: '...', executionId: '...' }
 
 // Stream completed
 { type: 'finish', finishReason: 'stop' }
 
 // Possible finish reasons:
 // - 'stop': Normal completion
-// - 'tool-calls': Waiting for tool execution (handled by SDK)
+// - 'tool-calls': Waiting for server tool execution (handled by SDK internally)
+// - 'client-tool-calls': Waiting for client tool execution
 // - 'length': Max tokens reached
 // - 'content-filter': Content filtered
 // - 'error': Error occurred
@@ -178,8 +181,53 @@ type StreamEvent =
   | BlockStartEvent
   | BlockEndEvent
   | ResourceUpdateEvent
-  | ToolRequestEvent;
+  | ToolRequestEvent
+  | ClientToolRequestEvent;
 ```
+
+### Client Tool Request
+
+When a tool has no server handler registered, the SDK emits a `client-tool-request` event:
+
+```typescript
+{
+  type: 'client-tool-request',
+  executionId: 'exec_abc123',       // Use this to continue execution
+  toolCalls: [                       // Tools for client to handle
+    {
+      toolCallId: 'call_xyz',
+      toolName: 'get-browser-location',
+      args: {}
+    }
+  ],
+  serverToolResults: [               // Results from server tools in same batch
+    {
+      toolCallId: 'call_def',
+      toolName: 'get-user-account',
+      result: { name: 'Demo User' }
+    }
+  ]
+}
+```
+
+After the client handles the tools, send a `continue` request with all results:
+
+```typescript
+session.execute({
+  type: 'continue',
+  executionId: 'exec_abc123',
+  toolResults: [
+    ...serverToolResults, // Include server results from the event
+    {
+      toolCallId: 'call_xyz',
+      toolName: 'get-browser-location',
+      result: { lat: 40.7128, lng: -74.006 },
+    },
+  ],
+});
+```
+
+See [Client Tools](/docs/client-sdk/client-tools) for full client-side implementation.
 
 ## Error Events
 

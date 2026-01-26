@@ -58,11 +58,12 @@ function Chat({ sessionId }: { sessionId: string }) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        triggerRequest: (triggerName, input) =>
+        request: (req, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, triggerName, input }),
+            body: JSON.stringify({ sessionId, ...req }),
+            signal: options?.signal,
           }),
       }),
     [sessionId],
@@ -105,11 +106,12 @@ The `OctavusChat` class can be used with any framework or vanilla JavaScript:
 import { OctavusChat, createHttpTransport } from '@octavus/client-sdk';
 
 const transport = createHttpTransport({
-  triggerRequest: (triggerName, input) =>
+  request: (req, options) =>
     fetch('/api/trigger', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, triggerName, input }),
+      body: JSON.stringify({ sessionId, ...req }),
+      signal: options?.signal,
     }),
 });
 
@@ -168,7 +170,8 @@ message.parts.map((part) => {
 ```tsx
 const { status } = useOctavusChat({ transport });
 
-// status: 'idle' | 'streaming' | 'error'
+// status: 'idle' | 'streaming' | 'error' | 'awaiting-input'
+// 'awaiting-input' occurs when interactive client tools need user action
 ```
 
 ### Stop Streaming
@@ -196,6 +199,11 @@ interface OctavusChatOptions {
     files: { filename: string; mediaType: string; size: number }[],
   ) => Promise<UploadUrlsResponse>;
 
+  // Optional: Client-side tool handlers
+  // - Function: executes automatically and returns result
+  // - 'interactive': appears in pendingClientTools for user input
+  clientTools?: Record<string, ClientToolHandler>;
+
   // Optional: Pre-populate with existing messages (session restore)
   initialMessages?: UIMessage[];
 
@@ -209,12 +217,15 @@ interface OctavusChatOptions {
 interface UseOctavusChatReturn {
   // State
   messages: UIMessage[];
-  status: ChatStatus; // 'idle' | 'streaming' | 'error'
+  status: ChatStatus; // 'idle' | 'streaming' | 'error' | 'awaiting-input'
   error: OctavusError | null; // Structured error with type, source, retryable
 
   // Connection (socket transport only - undefined for HTTP)
   connectionState: ConnectionState | undefined; // 'disconnected' | 'connecting' | 'connected' | 'error'
   connectionError: Error | undefined;
+
+  // Client tools (interactive tools awaiting user input)
+  pendingClientTools: Record<string, InteractiveTool[]>; // Keyed by tool name
 
   // Actions
   send: (
@@ -251,11 +262,11 @@ Creates an HTTP/SSE transport using native `fetch()`:
 import { createHttpTransport } from '@octavus/react';
 
 const transport = createHttpTransport({
-  triggerRequest: (triggerName, input, options) =>
+  request: (req, options) =>
     fetch('/api/trigger', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, triggerName, input }),
+      body: JSON.stringify({ sessionId, ...req }),
       signal: options?.signal,
     }),
 });
@@ -308,8 +319,9 @@ class OctavusChat {
 
   // State (read-only)
   readonly messages: UIMessage[];
-  readonly status: ChatStatus;
+  readonly status: ChatStatus; // 'idle' | 'streaming' | 'error' | 'awaiting-input'
   readonly error: OctavusError | null; // Structured error
+  readonly pendingClientTools: Record<string, InteractiveTool[]>; // Interactive tools
 
   // Actions
   send(
@@ -330,6 +342,7 @@ class OctavusChat {
 - [Socket Transport](/docs/client-sdk/socket-transport) — WebSocket and SockJS integration
 - [Messages](/docs/client-sdk/messages) — Working with message state
 - [Streaming](/docs/client-sdk/streaming) — Building streaming UIs
+- [Client Tools](/docs/client-sdk/client-tools) — Interactive browser-side tool handling
 - [Operations](/docs/client-sdk/execution-blocks) — Showing agent progress
 - [Error Handling](/docs/client-sdk/error-handling) — Handling errors with type guards
 - [File Uploads](/docs/client-sdk/file-uploads) — Uploading images and documents
