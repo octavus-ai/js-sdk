@@ -206,7 +206,7 @@ export class AgentSession {
         return;
       }
 
-      // Reset tool results for next iteration (executionId persists for server-side tool loops)
+      // Reset tool results for next iteration (executionId persists through the loop)
       toolResults = undefined;
 
       // Read and process the SSE stream

@@ -1298,15 +1298,15 @@ export class OctavusChat {
 
     if (this._pendingExecutionId === null) {
       // Context lost - this shouldn't happen, but handle gracefully
+      const errorObj = new OctavusError({
+        errorType: 'internal_error',
+        message: 'Cannot continue execution: execution ID was lost.',
+        source: 'client',
+        retryable: false,
+      });
+      this.setError(errorObj);
       this.setStatus('error');
-      this.setError(
-        new OctavusError({
-          errorType: 'internal_error',
-          message: 'Cannot continue execution: execution ID was lost.',
-          source: 'client',
-          retryable: false,
-        }),
-      );
+      this.options.onError?.(errorObj);
       return;
     }
 
