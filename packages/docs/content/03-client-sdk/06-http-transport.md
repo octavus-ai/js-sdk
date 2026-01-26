@@ -28,11 +28,11 @@ function Chat({ sessionId }: { sessionId: string }) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        request: (req, options) =>
+        request: (payload, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, ...req }),
+            body: JSON.stringify({ sessionId, ...payload }),
             signal: options?.signal,
           }),
       }),
@@ -62,7 +62,7 @@ const client = new OctavusClient({
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { sessionId, ...req } = body;
+  const { sessionId, ...payload } = body;
 
   const session = client.agentSessions.attach(sessionId, {
     tools: {
@@ -73,7 +73,7 @@ export async function POST(request: Request) {
   });
 
   // execute() handles both triggers and client tool continuations
-  const events = session.execute(req, { signal: request.signal });
+  const events = session.execute(payload, { signal: request.signal });
 
   return new Response(toSSEStream(events), {
     headers: {
@@ -217,7 +217,7 @@ const client = new OctavusClient({
 });
 
 app.post('/api/trigger', async (req, res) => {
-  const { sessionId, ...request } = req.body;
+  const { sessionId, ...payload } = req.body;
 
   const session = client.agentSessions.attach(sessionId, {
     tools: {
@@ -227,7 +227,7 @@ app.post('/api/trigger', async (req, res) => {
   });
 
   // execute() handles both triggers and continuations
-  const events = session.execute(request);
+  const events = session.execute(payload);
   const stream = toSSEStream(events);
 
   // Set SSE headers
@@ -284,11 +284,11 @@ interface ContinueRequest {
 The `request` function receives a discriminated union. Spread the request onto your payload:
 
 ```typescript
-request: (req, options) =>
+request: (payload, options) =>
   fetch('/api/trigger', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ sessionId, ...req }), // Spread req to include type and fields
+    body: JSON.stringify({ sessionId, ...payload }),
     signal: options?.signal,
   });
 ```

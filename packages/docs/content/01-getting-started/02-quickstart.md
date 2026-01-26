@@ -107,7 +107,7 @@ import { octavus } from '@/lib/octavus';
 
 export async function POST(request: Request) {
   const body = await request.json();
-  const { sessionId, ...req } = body;
+  const { sessionId, ...payload } = body;
 
   // Attach to session with tool handlers
   const session = octavus.agentSessions.attach(sessionId, {
@@ -133,7 +133,7 @@ export async function POST(request: Request) {
   });
 
   // Execute the request and convert to SSE stream
-  const events = session.execute(req, { signal: request.signal });
+  const events = session.execute(payload, { signal: request.signal });
 
   // Return as streaming response
   return new Response(toSSEStream(events), {
@@ -170,11 +170,11 @@ export function Chat({ sessionId }: ChatProps) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        request: (req, options) =>
+        request: (payload, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, ...req }),
+            body: JSON.stringify({ sessionId, ...payload }),
             signal: options?.signal,
           }),
       }),

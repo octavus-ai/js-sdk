@@ -195,7 +195,7 @@ import { toSSEStream } from '@octavus/server-sdk';
 // In your API route
 export async function POST(request: Request) {
   const body = await request.json();
-  const { sessionId, ...req } = body;
+  const { sessionId, ...payload } = body;
 
   const authToken = request.headers.get('Authorization');
   const user = await validateToken(authToken);
@@ -218,7 +218,7 @@ export async function POST(request: Request) {
     },
   });
 
-  const events = session.execute(req, { signal: request.signal });
+  const events = session.execute(payload, { signal: request.signal });
   return new Response(toSSEStream(events));
 }
 ```

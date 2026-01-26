@@ -50,11 +50,11 @@ function Chat({ sessionId }: { sessionId: string }) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        request: (req, options) =>
+        request: (payload, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, ...req }),
+            body: JSON.stringify({ sessionId, ...payload }),
             signal: options?.signal,
           }),
       }),
@@ -333,11 +333,11 @@ export function Chat({ sessionId }: { sessionId: string }) {
   const transport = useMemo(
     () =>
       createHttpTransport({
-        request: (req, options) =>
+        request: (payload, options) =>
           fetch('/api/trigger', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, ...req }),
+            body: JSON.stringify({ sessionId, ...payload }),
             signal: options?.signal,
           }),
       }),

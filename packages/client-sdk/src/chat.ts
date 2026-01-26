@@ -384,11 +384,11 @@ function buildMessageFromState(state: StreamingState, status: 'streaming' | 'don
  *
  * const chat = new OctavusChat({
  *   transport: createHttpTransport({
- *     request: (req, options) =>
+ *     request: (payload, options) =>
  *       fetch('/api/trigger', {
  *         method: 'POST',
  *         headers: { 'Content-Type': 'application/json' },
- *         body: JSON.stringify({ sessionId, ...req }),
+ *         body: JSON.stringify({ sessionId, ...payload }),
  *         signal: options?.signal,
  *       }),
  *   }),

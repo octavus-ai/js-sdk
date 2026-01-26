@@ -137,14 +137,14 @@ This makes it easy to pass requests through from the client:
 // Simple passthrough from HTTP request body
 export async function POST(request: Request) {
   const body = await request.json();
-  const { sessionId, ...req } = body;
+  const { sessionId, ...payload } = body;
 
   const session = client.agentSessions.attach(sessionId, {
     tools: {
       /* ... */
     },
   });
-  const events = session.execute(req, { signal: request.signal });
+  const events = session.execute(payload, { signal: request.signal });
 
   return new Response(toSSEStream(events));
 }
