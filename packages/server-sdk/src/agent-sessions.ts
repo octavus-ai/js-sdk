@@ -2,6 +2,7 @@ import type {
   ChatMessage,
   ExecutionLogEntry,
   InlineMcpServer,
+  PendingToolCall,
   ToolHandlers,
   ToolResult,
   UIMessage,
@@ -97,6 +98,14 @@ export interface SessionAttachOptions {
   onToolResults?: (results: ToolResult[]) => Promise<void>;
   /** When true, unhandled tool calls return errors instead of being emitted as client-tool-request events. */
   rejectClientToolCalls?: boolean;
+  /**
+   * Resolve a suspending pending tool call (one whose schema declared `suspend`):
+   * the resident executor holds the call open and returns its result when an
+   * external event arrives, so one continuous turn hosts a long-lived interaction
+   * (e.g. a real-time session). Receives the abort signal so a Stop unblocks the
+   * wait.
+   */
+  onSuspend?: (call: PendingToolCall, signal?: AbortSignal) => Promise<unknown>;
   /** Called for each tool result reduced to a preview because it was too large to send. */
   onToolResultTruncated?: (info: ToolResultTruncation) => void;
 }
@@ -272,6 +281,7 @@ export class AgentSessionsApi extends BaseApiClient {
       onToolResults: options.onToolResults,
       onToolResultTruncated: options.onToolResultTruncated,
       rejectClientToolCalls: options.rejectClientToolCalls,
+      onSuspend: options.onSuspend,
     });
   }
 
@@ -304,6 +314,7 @@ export class AgentSessionsApi extends BaseApiClient {
       onToolResults: options.onToolResults,
       onToolResultTruncated: options.onToolResultTruncated,
       rejectClientToolCalls: options.rejectClientToolCalls,
+      onSuspend: options.onSuspend,
     });
   }
 }

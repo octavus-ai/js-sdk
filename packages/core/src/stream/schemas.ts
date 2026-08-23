@@ -266,6 +266,11 @@ export const pendingToolCallSchema = z.object({
   blockIndex: z.number().optional(),
   thread: z.string().optional(),
   workerId: z.string().optional(),
+  // Must be declared here as well as on the type: stream events are parsed with
+  // this schema and z.object() strips unknown keys, so an undeclared `suspend`
+  // would be silently dropped in transit and the executor would treat the call
+  // as an ordinary (rejectable) client tool instead of holding it open.
+  suspend: z.boolean().optional(),
 });
 
 export const toolResultSchema = z.object({

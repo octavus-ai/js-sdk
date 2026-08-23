@@ -37,6 +37,15 @@ export interface ToolSchema {
    * from MCP servers that declare `outputSchema` per the MCP spec.
    */
   outputSchema?: Record<string, unknown>;
+  /**
+   * When true, this tool suspends the turn instead of being executed. The
+   * runtime surfaces it as a pending tool call whose result is delivered by an
+   * external event (a coordination hub), and the turn stays open across the
+   * suspension - the resident executor holds the pending call until the event
+   * arrives, then continues. This is the seam for hosting a long-lived
+   * interaction (e.g. a real-time session) inside one continuous turn.
+   */
+  suspend?: boolean;
 }
 
 /** A runtime-discovered tool pairing a schema with an execution handler. */
@@ -528,6 +537,13 @@ export interface PendingToolCall {
   workerId?: string;
   /** Provider-specific metadata for this tool call (e.g. Google thought signatures). */
   providerMetadata?: ProviderMetadata;
+  /**
+   * True when this pending call suspends the turn awaiting an external event
+   * (see `ToolSchema.suspend`) rather than a device/client tool execution. The
+   * resident executor must hold the call open and resolve it with the event
+   * delivered by the coordination hub, not reject or execute it locally.
+   */
+  suspend?: boolean;
 }
 
 /**
