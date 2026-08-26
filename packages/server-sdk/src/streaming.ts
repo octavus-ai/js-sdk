@@ -150,6 +150,16 @@ export interface StreamExecutionConfig {
    */
   rejectClientToolCalls?: boolean;
   /**
+   * Resolve a suspending pending tool call - one whose schema declared `suspend`.
+   * Instead of executing or rejecting it, the resident executor holds the call
+   * open and returns its result once an external event (delivered by the
+   * coordination hub) arrives, so one continuous turn hosts a long-lived
+   * interaction (e.g. a real-time session). Receives the abort signal so a Stop
+   * can unblock the wait. When unset, suspend calls fall back to the normal
+   * handler / reject path (so ordinary consumers are unaffected).
+   */
+  onSuspend?: (call: PendingToolCall, signal?: AbortSignal) => Promise<unknown>;
+  /**
    * Called for each tool result that was too large to send and was reduced to a
    * preview before the continuation POST. Optional hook for logging/telemetry -
    * the reduction happens regardless of whether it is set.
@@ -474,14 +484,23 @@ export async function* executeStream(
 
     if (pendingToolCalls && pendingToolCalls.length > 0) {
       const toolHandlers = config.getToolHandlers();
-      const serverTools = pendingToolCalls.filter((tc) => toolHandlers[tc.toolName]);
-      const clientTools = pendingToolCalls.filter((tc) => !toolHandlers[tc.toolName]);
+      // A suspending pending call is resolved by `onSuspend` - the resident
+      // executor holds it open until the coordination hub delivers the resolving
+      // event. It runs alongside ordinary server tools (the abort-race below
+      // unblocks it on Stop) and is never treated as a missing client tool. Falls
+      // back to the normal path when `onSuspend` is unset.
+      const isSuspend = (tc: PendingToolCall): boolean =>
+        tc.suspend === true && config.onSuspend !== undefined;
+      const hasHandler = (tc: PendingToolCall): boolean => toolHandlers[tc.toolName] !== undefined;
+      const serverTools = pendingToolCalls.filter((tc) => isSuspend(tc) || hasHandler(tc));
+      const clientTools = pendingToolCalls.filter((tc) => !isSuspend(tc) && !hasHandler(tc));
 
       const toolExecution = Promise.all(
         serverTools.map(async (tc): Promise<ToolResult> => {
-          const handler = toolHandlers[tc.toolName]!;
           try {
-            const result = await handler(tc.args);
+            const result = isSuspend(tc)
+              ? await config.onSuspend!(tc, signal)
+              : await toolHandlers[tc.toolName]!(tc.args);
             return {
               toolCallId: tc.toolCallId,
               toolName: tc.toolName,

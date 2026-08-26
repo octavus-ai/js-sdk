@@ -3,6 +3,7 @@ import {
   generateId,
   type DynamicTool,
   type InlineMcpServer,
+  type PendingToolCall,
   type StreamEvent,
   type ToolHandlers,
   type ToolProvider,
@@ -162,6 +163,13 @@ export interface SessionConfig {
   onToolResults?: (results: ToolResult[]) => Promise<void>;
   /** When true, unhandled tool calls return errors instead of being emitted as client-tool-request events. */
   rejectClientToolCalls?: boolean;
+  /**
+   * Resolve a suspending pending tool call (one whose schema declared `suspend`).
+   * The resident executor holds the call open and returns its result when an
+   * external event arrives, so one continuous turn hosts a long-lived interaction
+   * (e.g. a real-time session). See {@link StreamExecutionConfig.onSuspend}.
+   */
+  onSuspend?: (call: PendingToolCall, signal?: AbortSignal) => Promise<unknown>;
   /** Called for each tool result reduced to a preview because it was too large to send. */
   onToolResultTruncated?: (info: ToolResultTruncation) => void;
   /** Deferred create-and-trigger config (mutually exclusive with `sessionId`). */
@@ -203,6 +211,7 @@ export class AgentSession {
   private onToolResults?: (results: ToolResult[]) => Promise<void>;
   private onToolResultTruncated?: (info: ToolResultTruncation) => void;
   private rejectClientToolCalls: boolean;
+  private onSuspend?: (call: PendingToolCall, signal?: AbortSignal) => Promise<unknown>;
 
   constructor(sessionConfig: SessionConfig) {
     this.sessionId = sessionConfig.sessionId;
@@ -214,6 +223,7 @@ export class AgentSession {
     this.onToolResults = sessionConfig.onToolResults;
     this.onToolResultTruncated = sessionConfig.onToolResultTruncated;
     this.rejectClientToolCalls = sessionConfig.rejectClientToolCalls ?? false;
+    this.onSuspend = sessionConfig.onSuspend;
     this.resourceMap = new Map();
 
     if (sessionConfig.mcpServers !== undefined && sessionConfig.mcpServers.length > 0) {
@@ -405,6 +415,7 @@ export class AgentSession {
         onToolResults: this.onToolResults,
         onToolResultTruncated: this.onToolResultTruncated,
         rejectClientToolCalls: this.rejectClientToolCalls,
+        onSuspend: this.onSuspend,
         errorContext: 'Failed to trigger',
       },
       { executionId: payload.executionId, toolResults: payload.toolResults },
