@@ -58,3 +58,4 @@ Create a key, copy it once (it is shown only at creation), and store it securely
 
 - [Using the SDK](/docs/workforce-agents/sdk) - the `@octavus/server-sdk` `workforce` client, including a run-and-wait helper.
 - [API reference](/docs/workforce-agents/api-reference) - the REST endpoints, for any language.
+- [Agent CLI](/docs/workforce-agents/cli) - run an agent on a machine you control, using that machine as its computer.
