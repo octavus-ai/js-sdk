@@ -73,7 +73,7 @@ Each entry shows the raw JSON payload with a copy button for easy inspection.
 
 ### Storage
 
-Traces are stored in Redis alongside other execution log entries with a 24-hour TTL. They are not permanently stored. A typical LLM trace with 10 messages and 5 tools is 10-50KB; without tracing, model-request markers are a few hundred bytes. Media traces are small even when traced (just the prompt and request parameters).
+Traces are stored alongside other execution log entries with a 24-hour TTL. They are not permanently stored. A typical LLM trace with 10 messages and 5 tools is 10-50KB; without tracing, model-request markers are a few hundred bytes. Media traces are small even when traced (just the prompt and request parameters).
 
 ### Recommendations
 

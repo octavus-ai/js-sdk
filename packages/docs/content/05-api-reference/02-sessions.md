@@ -68,6 +68,8 @@ Retrieve session state. Returns UI-ready messages for active sessions, or expira
 GET /api/agent-sessions/:sessionId
 ```
 
+> **Note**: For an agent configured with [context management](/docs/protocol/context-management) (`maxToolOutputTokens` and/or `contextManagement`), the returned session state is the agent's **bounded working memory**, not a byte-complete transcript: tool results are the bounded previews and, once the session has compacted, older turns are represented by the running summary. For the complete, untruncated history - every tool result at full size - read the session's execution logs / trace, which is the durable record.
+
 ### Query Parameters
 
 | Parameter | Type   | Description                                          |
