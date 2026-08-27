@@ -4,6 +4,11 @@ import type { ToolHandler, ToolSchema } from '@octavus/core';
 import { NAMESPACE_SEPARATOR, type ShellConfig, type ShellMode } from './entries';
 
 const DEFAULT_TIMEOUT_MS = 300_000;
+// Hard ceiling on a single command's timeout. A caller can ask for a long
+// timeout (a multi-hour build or solver), but never an unbounded one: a command
+// still running at this cap is killed and the tool returns exitCode 124, so a
+// runaway or infinite command reports back rather than blocking indefinitely.
+const MAX_TIMEOUT_MS = 4 * 60 * 60 * 1000;
 const MAX_OUTPUT_LENGTH = 100_000;
 
 interface ShellToolState {
@@ -165,7 +170,11 @@ export function createShellTools(namespace: string, config: ShellConfig): ShellT
     }
 
     const cwd = (args.cwd as string | undefined) ?? config.cwd;
-    const commandTimeout = (args.timeout as number | undefined) ?? timeout;
+    const requestedTimeout = args.timeout as number | undefined;
+    const commandTimeout = Math.min(
+      typeof requestedTimeout === 'number' && requestedTimeout > 0 ? requestedTimeout : timeout,
+      MAX_TIMEOUT_MS,
+    );
 
     return await executeCommand(command, cwd, commandTimeout);
   };
@@ -189,7 +198,7 @@ export function createShellTools(namespace: string, config: ShellConfig): ShellT
             },
             timeout: {
               type: 'number',
-              description: `Timeout in milliseconds (optional, default ${DEFAULT_TIMEOUT_MS})`,
+              description: `Timeout in milliseconds (optional, default ${DEFAULT_TIMEOUT_MS}, max ${MAX_TIMEOUT_MS}). A command still running at its timeout is killed and returns exitCode 124, so set a generous timeout for long jobs rather than expecting an unbounded run.`,
             },
           },
           required: ['command'],
