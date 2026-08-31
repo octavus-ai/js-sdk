@@ -37,16 +37,116 @@ const dispatchResponseSchema = z.object({
   status: threadStatusSchema,
 });
 
+/** The effective per-run config a thread ran under (what the run actually used). */
+const threadRunConfigSchema = z.object({
+  model: z.string().optional(),
+  backupModel: z.string().optional(),
+  thinking: z.string().optional(),
+  capabilities: z.record(z.string(), z.boolean()).optional(),
+});
+
+/** Per-run cost + token summary, readable with the agent key. */
+const usageSummarySchema = z.object({
+  currency: z.literal('USD'),
+  costUsd: z.number(),
+  totalFeeUsd: z.number(),
+  byok: z.boolean(),
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  totalTokens: z.number(),
+});
+
+/** A thread's execution recording, when the run was recorded. */
+const recordingSchema = z.object({
+  status: z.string().transform((s) => s as WorkforceRecording['status']),
+  visibility: z.string().transform((v) => v as WorkforceRecording['visibility']),
+  url: z.string().nullable(),
+  error: z.string().nullable(),
+});
+
 const threadResponseSchema = z.object({
   threadId: z.string(),
   status: threadStatusSchema,
   failureReason: z.string().nullable(),
   messages: z.array(uiMessageSchema),
+  // Optional read fields; an older platform may omit them, so default to null.
+  runConfig: threadRunConfigSchema.nullish().transform((v) => v ?? null),
+  usage: usageSummarySchema.nullish().transform((v) => v ?? null),
+  recording: recordingSchema.nullish().transform((v) => v ?? null),
 });
+
+/** Thinking/reasoning effort for a run. */
+export type WorkforceThinkingEffort = 'off' | 'low' | 'medium' | 'high' | 'max';
+
+/**
+ * Per-run configuration for a Workforce run, applied when starting a new thread
+ * (the same shape the Agent CLI sends). Every field is optional; omitted fields
+ * inherit the agent's stored configuration. The server validates and bounds it -
+ * an unknown model, a provider with no resolvable key, or an undeclared
+ * capability is rejected with a clear error before the run starts.
+ */
+export interface WorkforceRunConfig {
+  /** Primary model for the run, "provider/model-id" (e.g. "anthropic/claude-sonnet-5"). */
+  model?: string;
+  /** Backup model for the run, "provider/model-id". */
+  backupModel?: string;
+  /** Thinking/reasoning effort for the run. */
+  thinking?: WorkforceThinkingEffort;
+  /**
+   * Per-capability toggles (slug -> enabled): `true` enables, `false` disables; a
+   * capability not listed inherits the agent's stored setting. Bounded to the
+   * capabilities the agent's protocol declares.
+   */
+  capabilities?: Record<string, boolean>;
+  /** Record this run's execution view (working process + computer) to a shareable video. */
+  record?: boolean;
+  /** Where the recording is stored/served: 'private' (default) or 'public' (permanent URL). */
+  recordVisibility?: 'private' | 'public';
+}
 
 export interface WorkforceDispatchResult {
   threadId: string;
   status: WorkforceThreadStatus;
+}
+
+/** The effective per-run config a thread ran under (what the run actually used). */
+export interface WorkforceThreadRunConfig {
+  /** Primary model, "provider/model-id". */
+  model?: string;
+  /** Backup model, "provider/model-id". */
+  backupModel?: string;
+  /** Thinking/reasoning effort. */
+  thinking?: string;
+  /** The capability toggles the run applied (slug -> enabled). */
+  capabilities?: Record<string, boolean>;
+}
+
+/**
+ * Per-run cost + token summary for a thread. `costUsd` is the model/provider
+ * cost regardless of who paid (the charged fee on Octavus keys, or the would-be
+ * cost on BYOK); `totalFeeUsd` is the usage-based fee (provider + bandwidth) and
+ * excludes any time-based agent billing.
+ */
+export interface WorkforceUsageSummary {
+  currency: 'USD';
+  costUsd: number;
+  totalFeeUsd: number;
+  byok: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+
+/** A thread's execution recording (present when the run was recorded). */
+export interface WorkforceRecording {
+  /** Recording lifecycle: `recording` | `processing` | `ready` | `failed` | `unavailable`. */
+  status: 'recording' | 'processing' | 'ready' | 'failed' | 'unavailable';
+  /** `private` (played via a signed URL after authorization) or `public` (permanent URL). */
+  visibility: 'private' | 'public';
+  /** Playable URL once `ready`; null otherwise. */
+  url: string | null;
+  /** Human-readable reason when `failed` or `unavailable`; null otherwise. */
+  error: string | null;
 }
 
 export interface WorkforceThread {
@@ -56,9 +156,28 @@ export interface WorkforceThread {
   failureReason: string | null;
   /** The thread's UI messages (the conversation a user would see). */
   messages: UIMessage[];
+  /** The effective per-run config the thread ran under; null for a run with no per-run config. */
+  runConfig: WorkforceThreadRunConfig | null;
+  /** Per-run cost + token summary (zeros until the run accrues spend); null only if the platform doesn't report usage. */
+  usage: WorkforceUsageSummary | null;
+  /** The thread's execution recording; null unless the run was recorded. */
+  recording: WorkforceRecording | null;
 }
 
 export interface WorkforceDispatchOptions {
+  /** File attachments to include with the message. */
+  files?: FileReference[];
+  /**
+   * Per-run configuration applied when starting a new thread (model, backup
+   * model, thinking, capability toggles, recording) - the same shape the Agent
+   * CLI sends. A thread's run config is fixed at creation, so it is honored by
+   * `dispatch` / `run` and not by `followUp`.
+   */
+  config?: WorkforceRunConfig;
+}
+
+/** Options for continuing an existing thread with a follow-up message. */
+export interface WorkforceFollowUpOptions {
   /** File attachments to include with the message. */
   files?: FileReference[];
 }
@@ -104,7 +223,7 @@ export class WorkforceApi extends BaseApiClient {
   ): Promise<WorkforceDispatchResult> {
     return await this.httpPost(
       `/api/v1/workforce/agents/${encodeURIComponent(agentId)}/threads`,
-      { message, files: options.files },
+      { message, files: options.files, config: options.config },
       dispatchResponseSchema,
     );
   }
@@ -120,12 +239,13 @@ export class WorkforceApi extends BaseApiClient {
   /**
    * Send a follow-up message into an existing thread (sequential continuation).
    * If a run is in flight it queues and runs after; otherwise it dispatches now.
+   * A thread's run config is fixed at creation, so `followUp` takes no config.
    */
   async followUp(
     agentId: string,
     threadId: string,
     message: string,
-    options: WorkforceDispatchOptions = {},
+    options: WorkforceFollowUpOptions = {},
   ): Promise<WorkforceDispatchResult> {
     return await this.httpPost(
       `/api/v1/workforce/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages`,
@@ -172,7 +292,10 @@ export class WorkforceApi extends BaseApiClient {
     message: string,
     options: WorkforceRunOptions = {},
   ): Promise<WorkforceThread> {
-    const { threadId } = await this.dispatch(agentId, message, { files: options.files });
+    const { threadId } = await this.dispatch(agentId, message, {
+      files: options.files,
+      config: options.config,
+    });
     return await this.waitForCompletion(agentId, threadId, options);
   }
 }

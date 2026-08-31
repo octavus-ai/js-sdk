@@ -68,6 +68,28 @@ await client.workforce.followUp(agentId, threadId, 'Now turn that into a slide d
 const thread = await client.workforce.waitForCompletion(agentId, threadId);
 ```
 
+## Configure a run
+
+`dispatch()` and `run()` accept a `config` to set the model, backup model, thinking effort, capability toggles, and recording for the run - the same shape the [Agent CLI](/docs/workforce-agents/cli) accepts. Set it when starting a thread; a thread's run config is fixed at creation, so `followUp()` takes no config. Omitted fields inherit the agent's stored configuration, and the server validates it before the run starts (an unrunnable model or an undeclared capability is rejected up front).
+
+```ts
+const thread = await client.workforce.run(agentId, 'Summarize the latest sales report', {
+  config: {
+    model: 'anthropic/claude-sonnet-5',
+    backupModel: 'openai/gpt-5.5',
+    thinking: 'high',
+    capabilities: { memory: false },
+    record: true,
+  },
+});
+
+console.log(thread.runConfig); // the effective config the run used
+console.log(thread.usage?.costUsd, thread.usage?.totalTokens);
+console.log(thread.recording?.url); // playable URL once the recording is ready
+```
+
+This makes the SDK a drop-in benchmark harness: sweep models or capability sets across runs and read `runConfig` + `usage` back off each thread to attribute the result.
+
 ## Options
 
 `run()` and `waitForCompletion()` accept polling options. Full runs can take several minutes, so the defaults are generous.
@@ -93,12 +115,15 @@ If the timeout elapses first, `waitForCompletion()` and `run()` throw. The run k
 
 `getThread()`, `waitForCompletion()`, and `run()` return a thread:
 
-| Field           | Type           | Description                                                                                                    |
-| --------------- | -------------- | -------------------------------------------------------------------------------------------------------------- |
-| `threadId`      | string         | The thread identifier                                                                                          |
-| `status`        | string         | `idle`, `queued`, `pending`, `running`, `completed`, `failed`, or `cancelled`                                  |
-| `failureReason` | string \| null | Why the run failed, when `status` is `failed`                                                                  |
-| `messages`      | UIMessage[]    | The conversation - text, tool and skill steps, and files (see [UIMessage parts](/docs/api-reference/sessions)) |
+| Field           | Type           | Description                                                                                                      |
+| --------------- | -------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `threadId`      | string         | The thread identifier                                                                                            |
+| `status`        | string         | `idle`, `queued`, `pending`, `running`, `completed`, `failed`, or `cancelled`                                    |
+| `failureReason` | string \| null | Why the run failed, when `status` is `failed`                                                                    |
+| `messages`      | UIMessage[]    | The conversation - text, tool and skill steps, and files (see [UIMessage parts](/docs/api-reference/sessions))   |
+| `runConfig`     | object \| null | The effective per-run config the thread ran under (model, backupModel, thinking, capabilities); null if none     |
+| `usage`         | object \| null | Per-run cost + token summary (`costUsd`, `totalFeeUsd`, `byok`, token counts); zeros until the run accrues spend |
+| `recording`     | object \| null | The execution recording when recorded (`status`, `visibility`, `url`, `error`); null otherwise                   |
 
 Use `isTerminalThreadStatus(status)` to check whether a run has finished.
 
