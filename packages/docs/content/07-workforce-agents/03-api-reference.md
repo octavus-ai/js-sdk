@@ -29,10 +29,26 @@ POST /api/v1/workforce/agents/{agentId}/threads
 }
 ```
 
-| Field     | Type            | Required | Description                       |
-| --------- | --------------- | -------- | --------------------------------- |
-| `message` | string          | Yes      | The task or message for the agent |
-| `files`   | FileReference[] | No       | Hosted file attachments           |
+| Field     | Type            | Required | Description                                                                                            |
+| --------- | --------------- | -------- | ------------------------------------------------------------------------------------------------------ |
+| `message` | string          | Yes      | The task or message for the agent                                                                      |
+| `files`   | FileReference[] | No       | Hosted file attachments                                                                                |
+| `config`  | RunConfig       | No       | Per-run configuration for this thread (see below). Omitted fields inherit the agent's stored settings. |
+
+#### RunConfig
+
+Configure how the agent runs for this thread without changing its dashboard settings - the same shape the [Agent CLI](/docs/workforce-agents/cli) accepts. Set on thread creation only; a thread's run config is fixed once it starts. The server validates and bounds it before the run starts, so an unrunnable model or an undeclared capability is rejected up front.
+
+| Field              | Type                      | Description                                                                                             |
+| ------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `model`            | string                    | Primary model for the run, `provider/model-id` (e.g. `anthropic/claude-sonnet-5`).                      |
+| `backupModel`      | string                    | Backup model, `provider/model-id`.                                                                      |
+| `thinking`         | string                    | Thinking/reasoning effort: `off`, `low`, `medium`, `high`, or `max`.                                    |
+| `capabilities`     | Record\<string, boolean\> | Per-capability toggles (slug -> enabled). Unlisted capabilities inherit the agent default.              |
+| `record`           | boolean                   | Record this run's execution view (working process + computer) to a shareable video.                     |
+| `recordVisibility` | string                    | Where a recording is stored: `private` (default) or `public` (permanent URL). Ignored without `record`. |
+
+Any model is allowed as long as a key resolves for its provider (your project/org key or the platform default). Capability toggles are bounded to the capabilities the agent's protocol declares.
 
 ### Response
 
@@ -56,6 +72,23 @@ curl -X POST https://octavus.ai/api/v1/workforce/agents/AGENT_ID/threads \
   -d '{ "message": "Summarize the latest sales report" }'
 ```
 
+With a per-run config (model, thinking, capability toggles, recording):
+
+```bash
+curl -X POST https://octavus.ai/api/v1/workforce/agents/AGENT_ID/threads \
+  -H "Authorization: Bearer oct_agt_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Summarize the latest sales report",
+    "config": {
+      "model": "anthropic/claude-sonnet-5",
+      "thinking": "high",
+      "capabilities": { "memory": false },
+      "record": true
+    }
+  }'
+```
+
 ## Get a thread
 
 Read a thread's status and messages. Poll this until the run finishes.
@@ -71,16 +104,30 @@ GET /api/v1/workforce/agents/{agentId}/threads/{threadId}
   "threadId": "cm5xyz123abc456def",
   "status": "completed",
   "failureReason": null,
-  "messages": []
+  "messages": [],
+  "runConfig": { "model": "anthropic/claude-sonnet-5", "thinking": "high" },
+  "usage": {
+    "currency": "USD",
+    "costUsd": 0.0421,
+    "totalFeeUsd": 0.0455,
+    "byok": false,
+    "inputTokens": 18234,
+    "outputTokens": 1207,
+    "totalTokens": 19441
+  },
+  "recording": null
 }
 ```
 
-| Field           | Type           | Description                                                                   |
-| --------------- | -------------- | ----------------------------------------------------------------------------- |
-| `threadId`      | string         | The thread identifier                                                         |
-| `status`        | string         | `idle`, `queued`, `pending`, `running`, `completed`, `failed`, or `cancelled` |
-| `failureReason` | string \| null | Why the run failed, when `status` is `failed`                                 |
-| `messages`      | UIMessage[]    | The conversation - see [UIMessage parts](/docs/api-reference/sessions)        |
+| Field           | Type           | Description                                                                                                                                     |
+| --------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `threadId`      | string         | The thread identifier                                                                                                                           |
+| `status`        | string         | `idle`, `queued`, `pending`, `running`, `completed`, `failed`, or `cancelled`                                                                   |
+| `failureReason` | string \| null | Why the run failed, when `status` is `failed`                                                                                                   |
+| `messages`      | UIMessage[]    | The conversation - see [UIMessage parts](/docs/api-reference/sessions)                                                                          |
+| `runConfig`     | object \| null | The effective per-run config the thread ran under (`model`, `backupModel`, `thinking`, `capabilities`). Null for a run with no per-run config.  |
+| `usage`         | object \| null | Per-run cost + token summary: `costUsd` (model/provider cost), `totalFeeUsd` (provider + bandwidth fee), `byok`, and input/output/total tokens. |
+| `recording`     | object \| null | The execution recording when the run was recorded: `status`, `visibility`, a playable `url` once ready, and `error`. Null when not recorded.    |
 
 Keep polling while the status is `pending`, `queued`, or `running`. Stop when it is `completed`, `failed`, or `cancelled`.
 

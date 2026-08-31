@@ -47,7 +47,13 @@ export {
   type WorkforceThreadStatus,
   type WorkforceDispatchResult,
   type WorkforceThread,
+  type WorkforceThreadRunConfig,
+  type WorkforceUsageSummary,
+  type WorkforceRecording,
+  type WorkforceRunConfig,
+  type WorkforceThinkingEffort,
   type WorkforceDispatchOptions,
+  type WorkforceFollowUpOptions,
   type WorkforceWaitOptions,
   type WorkforceRunOptions,
 } from '@/workforce.js';
