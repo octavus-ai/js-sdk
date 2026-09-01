@@ -9,8 +9,9 @@
  * given moment, and it is flushed immediately when a stream ends so completion
  * is never delayed.
  *
- * The math here (how many characters to reveal on a frame) is intentionally
- * pure and exported so it can be unit-tested without a DOM or timers.
+ * The reveal math (how many characters to show on a frame) is deliberately
+ * pure - deterministic given its inputs, with no DOM or timer dependence -
+ * and kept separate from the frame loop that drives it.
  */
 
 /** How the pacer advances the revealed text. */
@@ -102,8 +103,11 @@ export function computeReveal(
 
 /**
  * Extend an index forward to the end of the current word (and any trailing
- * whitespace) so the pacer never reveals a partial word. Always returns a value
- * strictly greater than a mid-word `index` unless the end of text is reached.
+ * whitespace) so a reveal boundary never lands mid-word inside received text.
+ * The still-incomplete last word of the buffer is the deliberate exception:
+ * the snap runs to the end of the buffer, so the tail word is revealed
+ * progressively as it arrives - holding it back would stall the typing
+ * mid-sentence and keep the frame loop running with nothing to do.
  */
 export function snapToWordBoundary(text: string, index: number): number {
   const len = text.length;
@@ -115,7 +119,7 @@ export function snapToWordBoundary(text: string, index: number): number {
 }
 
 function isWhitespace(ch: string): boolean {
-  return ch === ' ' || ch === '\n' || ch === '\t' || ch === '\r' || /\s/.test(ch);
+  return /\s/.test(ch);
 }
 
 /**

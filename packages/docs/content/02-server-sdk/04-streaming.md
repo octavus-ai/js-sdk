@@ -138,7 +138,7 @@ agent:
 
 - `chunking: off` (the default) forwards provider deltas unchanged - identical to today's behavior, no extra frames.
 - `chunking: word` / `line` emit more, smaller SSE frames so downstream rendering looks like continuous typing. This is the expected trade-off of finer wire granularity: more (smaller) events over the wire.
-- `delayMs` is an optional pause between emitted chunks. Keep it small so a burst drains within the model's natural idle gap (avoids adding latency on fast models). Omit it for the built-in default.
+- `delayMs` is an optional pause between emitted chunks, an integer between 0 and 100. Keep it small so a burst drains within the model's natural idle gap (avoids adding latency on fast models). Omit it for the built-in default.
 
 Cadence is resolved with the standard `block > thread > agent` precedence, the same as `speed`. It does not apply to structured output (`responseType`) blocks, whose deltas carry JSON rather than prose.
 

@@ -624,7 +624,7 @@ agent:
 
 - `chunking: off` (the default) forwards provider deltas unchanged - no extra frames, no behavior change.
 - `chunking: word` / `line` split text and reasoning into word- or line-sized deltas so a consumer rendering the raw stream sees continuous typing. The trade-off is more, smaller stream events.
-- `delayMs` is an optional pause between emitted chunks. Keep it small so a burst drains within the model's natural idle gap; omit it for the built-in default.
+- `delayMs` is an optional pause between emitted chunks, an integer between 0 and 100. Keep it small so a burst drains within the model's natural idle gap; omit it for the built-in default.
 
 This shapes the wire stream, which is what you want when a backend consumes the SSE stream (via `@octavus/server-sdk`) and renders it elsewhere. If you render through the client SDK instead, prefer the zero-cost client-side `textSmoothing` option (see [Client SDK -> Streaming](/docs/client-sdk/streaming)); the two are independent and can be combined.
 
