@@ -266,6 +266,7 @@ export function useOctavusChat(options: OctavusChatOptions): UseOctavusChatRetur
     onSessionCreated: options.onSessionCreated,
     requestUploadUrls: options.requestUploadUrls,
     uploadOptions: options.uploadOptions,
+    textSmoothing: options.textSmoothing,
   });
   const transport = options.transport;
 

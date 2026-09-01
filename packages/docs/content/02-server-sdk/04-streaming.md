@@ -92,16 +92,14 @@ Streaming text content:
 { type: 'text-start', id: '...' }
 
 // Incremental text (most common event)
-{ type: 'text-delta', id: '...', delta: 'Hello' }
-{ type: 'text-delta', id: '...', delta: '!' }
-{ type: 'text-delta', id: '...', delta: ' How' }
-{ type: 'text-delta', id: '...', delta: ' can' }
-{ type: 'text-delta', id: '...', delta: ' I' }
-{ type: 'text-delta', id: '...', delta: ' help?' }
+{ type: 'text-delta', id: '...', delta: 'Hello! How' }
+{ type: 'text-delta', id: '...', delta: ' can I help?' }
 
 // Text generation ended
 { type: 'text-end', id: '...' }
 ```
+
+> **Delta granularity is provider-dependent.** Each `text-delta` is forwarded exactly as the model provider frames it. Some providers emit small, word-sized deltas; others (notably some Claude models) emit larger multi-token chunks, so text can arrive in lumps rather than a steady token-by-token stream. Do not assume a fixed delta size. To render text as smooth, continuous typing regardless of provider framing, see [Delivery Cadence](#delivery-cadence) below.
 
 ### Reasoning Events
 
@@ -117,6 +115,32 @@ Extended reasoning (for supported models like Claude):
 // Reasoning ended
 { type: 'reasoning-end', id: '...' }
 ```
+
+## Delivery Cadence
+
+Raw `text-delta` (and `reasoning-delta`) granularity is set by the model provider, so it can be coarse - large multi-token lumps rather than a steady stream. Octavus gives you two independent, opt-in ways to get smooth, continuous rendering. They can be used alone or together:
+
+- **Client-side smoothing (recommended for most UIs).** If you render through `@octavus/client-sdk` / `@octavus/react`, enable the built-in typewriter pacer. It paces already-received text onto the screen at a steady cadence with no wire cost and no added latency (it is flushed the moment a turn finishes). See [Client SDK -> Streaming](/docs/client-sdk/streaming).
+- **Server-side (wire) smoothing.** If you consume the raw SSE stream in your own backend and render it elsewhere, you can have Octavus re-chunk the stream before it reaches you by declaring a streaming cadence in your agent config. This normalizes every provider uniformly.
+
+### Server-side cadence (agent config)
+
+Declare a `streaming` cadence on the agent (or a thread / a `next-message` block). When set, the runtime re-chunks visible text and reasoning into word- or line-sized deltas before sending them:
+
+```yaml
+agent:
+  model: anthropic/claude-sonnet-4-5
+  system: system-prompt
+  streaming:
+    chunking: word # off (default) | word | line
+    delayMs: 15 # optional inter-chunk delay
+```
+
+- `chunking: off` (the default) forwards provider deltas unchanged - identical to today's behavior, no extra frames.
+- `chunking: word` / `line` emit more, smaller SSE frames so downstream rendering looks like continuous typing. This is the expected trade-off of finer wire granularity: more (smaller) events over the wire.
+- `delayMs` is an optional pause between emitted chunks. Keep it small so a burst drains within the model's natural idle gap (avoids adding latency on fast models). Omit it for the built-in default.
+
+Cadence is resolved with the standard `block > thread > agent` precedence, the same as `speed`. It does not apply to structured output (`responseType`) blocks, whose deltas carry JSON rather than prose.
 
 ### Tool Events
 

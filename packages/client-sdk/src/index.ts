@@ -8,6 +8,12 @@ export {
   type InteractiveTool,
 } from './chat';
 
+export type {
+  TextSmoothingOption,
+  TextSmoothingConfig,
+  TextSmoothingGranularity,
+} from './text-pacer';
+
 export { uploadFiles, type UploadFilesOptions, type UploadUrlsResponse } from './files';
 
 export { parseSSEStream } from './stream/reader';
