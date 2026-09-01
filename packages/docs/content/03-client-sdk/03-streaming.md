@@ -18,6 +18,29 @@ const { messages, status, error } = useOctavusChat({ transport });
 // Each part has its own status too
 ```
 
+## Smooth Text Rendering
+
+Model providers frame their streams at different granularities. Some emit small, word-sized deltas; others emit large multi-token chunks, so text can land in visible lumps rather than a steady stream. To render assistant text (and reasoning) as smooth, continuous typing regardless of the provider, enable `textSmoothing`:
+
+```tsx
+// Word-level typewriter with sensible defaults
+const chat = useOctavusChat({ transport, textSmoothing: true });
+
+// Or customize granularity and base rate
+const chat = useOctavusChat({
+  transport,
+  textSmoothing: { granularity: 'word', charsPerSecond: 80 }, // 'word' | 'char'
+});
+```
+
+`textSmoothing` paces already-received text onto the screen from a small buffer, so provider bursts render as steady typing. It is purely a rendering choice:
+
+- **No wire cost and no added latency.** Nothing is held back on the network; smoothing only spreads text into the gaps between provider bursts, and the buffer is flushed immediately on finish, stop, or error - so the final text always appears at once and completion is never delayed.
+- **Adaptive.** The reveal rate scales with the backlog, so a fast model catches up instead of lagging behind.
+- **Scoped to prose.** Only text and reasoning are paced; tool calls, structured output (`responseType`), and other parts render immediately. Late-join / reconnect replays paint the caught-up turn in one shot and then resume smooth rendering for new text.
+
+`textSmoothing` defaults to `false` (off), so existing integrations are unchanged. It is independent from the server-side [streaming cadence](/docs/server-sdk/streaming#delivery-cadence): use `textSmoothing` when you render through this SDK, and the protocol `streaming` config when a backend consumes the raw wire and renders elsewhere.
+
 ## Building a Streaming UI
 
 ```tsx

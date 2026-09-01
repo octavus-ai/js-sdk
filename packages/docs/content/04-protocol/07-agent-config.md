@@ -44,6 +44,7 @@ agent:
 | `thinking`            | No       | Extended reasoning level (`low`/`medium`/`high`/`max`), `"off"`, or a variable reference                                                                                                                   |
 | `speed`               | No       | Inference speed for supported Opus models: `fast`/`standard` (see [Fast Mode](/docs/protocol/fast-mode))                                                                                                   |
 | `cache`               | No       | Prompt caching mode: `auto` (default), `extended`, or `off`                                                                                                                                                |
+| `streaming`           | No       | Delivery cadence for streamed text/reasoning: `{ chunking: off/word/line, delayMs? }` (see [Streaming Cadence](#streaming-cadence))                                                                        |
 | `maxToolOutputTokens` | No       | Cap a single tool result at this many tokens - in the model view and in stored state (head+tail preview + note); the full result stays in the execution logs/trace. Omit to leave tool output unbounded    |
 | `maxImageDimension`   | No       | Cap the longest side (px) of any image in the model view; over-cap images are delivered downscaled to fit (see [Image Delivery Limits](#image-delivery-limits)). Omit to deliver images at full resolution |
 | `maxOutputTokens`     | No       | Cap output tokens for a single generation (one agentic step). Omit to use the provider/SDK default (see [Output Limits and Loop Guard](#output-limits-and-loop-guard))                                     |
@@ -608,6 +609,27 @@ agent:
 - `0.8 - 1.2`: Creative, varied responses
 - `> 1.2`: Very creative (may be inconsistent)
 
+## Streaming Cadence
+
+Model providers frame their streamed output at different granularities - some emit small, word-sized deltas, others emit large multi-token chunks - so streamed text can arrive in lumps. The `streaming` option re-chunks visible text and reasoning on the wire so downstream renderers see a smooth, continuous stream, independent of the provider:
+
+```yaml
+agent:
+  model: anthropic/claude-sonnet-4-5
+  system: system
+  streaming:
+    chunking: word # off (default) | word | line
+    delayMs: 15 # optional inter-chunk delay in ms
+```
+
+- `chunking: off` (the default) forwards provider deltas unchanged - no extra frames, no behavior change.
+- `chunking: word` / `line` split text and reasoning into word- or line-sized deltas so a consumer rendering the raw stream sees continuous typing. The trade-off is more, smaller stream events.
+- `delayMs` is an optional pause between emitted chunks, an integer between 0 and 100. Keep it small so a burst drains within the model's natural idle gap; omit it for the built-in default.
+
+This shapes the wire stream, which is what you want when a backend consumes the SSE stream (via `@octavus/server-sdk`) and renders it elsewhere. If you render through the client SDK instead, prefer the zero-cost client-side `textSmoothing` option (see [Client SDK -> Streaming](/docs/client-sdk/streaming)); the two are independent and can be combined.
+
+`streaming` resolves with the standard `block > thread > agent` precedence and is a no-op for structured output (`responseType`) blocks. It is a literal option (not variable-resolvable).
+
 ## Dynamic Configuration
 
 Like `model`, the `temperature`, `thinking`, `speed`, and `maxSteps` fields can also reference an input variable. Consumers choose values at session creation, so the same agent can be tuned per call without protocol changes:
@@ -706,6 +728,7 @@ handlers:
       backupModel: openai/gpt-4o # Failover model
       thinking: low # Different thinking
       speed: fast # Fast mode for this thread (supported Opus models only)
+      streaming: { chunking: word } # Smooth streamed text for this thread
       cache: off # Different cache mode (does not inherit from agent)
       maxSteps: 1 # Limit tool calls
       system: escalation-summary # Different prompt
@@ -717,7 +740,7 @@ handlers:
       todoList: true # Thread-specific task list
 ```
 
-Each thread can have its own model, backup model, thinking level, speed, cache mode, MCP servers, skills, references, image model, web search setting, and task list setting. Skills must be defined in the protocol's `skills:` section. References must exist in the agent's `references/` directory. Workers use this same pattern since they don't have a global `agent:` section - which is how a worker enables fast mode.
+Each thread can have its own model, backup model, thinking level, speed, streaming cadence, cache mode, MCP servers, skills, references, image model, web search setting, and task list setting. Skills must be defined in the protocol's `skills:` section. References must exist in the agent's `references/` directory. Workers use this same pattern since they don't have a global `agent:` section - which is how a worker enables fast mode.
 
 ## Full Example
 

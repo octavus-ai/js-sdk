@@ -24,6 +24,13 @@ import {
 } from '@octavus/core';
 import type { Transport, TriggerOptions, ChatStreamItem } from './transports/types';
 import { uploadFiles, type UploadFilesOptions } from './files';
+import {
+  FrameScheduler,
+  computeReveal,
+  resolveTextSmoothing,
+  type ResolvedTextSmoothing,
+  type TextSmoothingOption,
+} from './text-pacer';
 
 /** Block types that are internal operations (not LLM-driven) */
 const OPERATION_BLOCK_TYPES = new Set(['set-resource', 'serialize-thread', 'generate-image']);
@@ -247,6 +254,22 @@ export interface OctavusChatOptions {
    * ```
    */
   onSessionCreated?: (sessionId: string) => void;
+
+  /**
+   * Client render smoothing (the "typewriter" effect). Paces already-received
+   * text and reasoning onto the screen at a steady cadence, so coarse provider
+   * bursts render as smooth typing instead of large jumps. Purely a rendering
+   * choice - it never changes the text, adds no wire cost, and is flushed
+   * immediately on finish/stop/error so completion is never delayed.
+   *
+   * - `false` / omitted: off (deltas render exactly as received). Default.
+   * - `true`: word-level smoothing with sensible defaults.
+   * - object: customize `granularity` ('word' | 'char') and `charsPerSecond`.
+   *
+   * Independent of the protocol-level `streaming` cadence (which reshapes the
+   * wire for consumers rendering off the raw SSE stream).
+   */
+  textSmoothing?: TextSmoothingOption;
 }
 
 // =============================================================================
@@ -595,10 +618,27 @@ export class OctavusChat {
   // Listener sets for reactive frameworks
   private listeners = new Set<Listener>();
 
+  // Client render smoothing (see the `textSmoothing` option). `null` = disabled.
+  private _smoothing: ResolvedTextSmoothing | null = null;
+  // Frame loop that paces revealed text; created lazily when smoothing is on.
+  private pacer: FrameScheduler | null = null;
+  // Revealed character count per streaming-message part, keyed by part path
+  // ('2' for top-level index 2, '2.5' for a worker's nested part). Only text
+  // and reasoning parts are tracked; everything else renders immediately.
+  // Positional keys are safe because streaming parts are append-only and grow
+  // in place within a turn; a transient mismatch would only self-correct
+  // (reveal is clamped and forward-only), never lose text.
+  private revealState = new Map<string, number>();
+  // Memoized smoothed snapshot for `get messages()`; recomputed when dirty so
+  // useSyncExternalStore sees a stable reference between notifications.
+  private _displayMessages: UIMessage[] | null = null;
+  private _displayDirty = true;
+
   constructor(options: OctavusChatOptions) {
     this.options = options;
     this._messages = options.initialMessages ?? [];
     this.transport = options.transport;
+    this._smoothing = resolveTextSmoothing(options.textSmoothing);
   }
 
   /**
@@ -610,6 +650,153 @@ export class OctavusChat {
    */
   updateOptions(updates: Partial<Omit<OctavusChatOptions, 'transport' | 'initialMessages'>>): void {
     this.options = { ...this.options, ...updates };
+    if ('textSmoothing' in updates) {
+      this.applySmoothingOption(resolveTextSmoothing(updates.textSmoothing));
+    }
+  }
+
+  /**
+   * Apply a change to the smoothing setting, keeping in-flight rendering
+   * coherent. Turning it off flushes to the full text; turning it on mid-stream
+   * only smooths text that arrives afterward (already-shown text is not hidden).
+   */
+  private applySmoothingOption(next: ResolvedTextSmoothing | null): void {
+    const wasEnabled = this._smoothing !== null;
+    const nowEnabled = next !== null;
+    // Default consumers never pass `textSmoothing`, so this runs on every render
+    // with both off - there is nothing to reconcile in that case.
+    if (!wasEnabled && !nowEnabled) return;
+    this._smoothing = next;
+    if (!nowEnabled) {
+      this.stopPacer();
+      return;
+    }
+    if (!wasEnabled && this.streamingState !== null) {
+      // Enabled mid-stream: treat everything shown so far as fully revealed so
+      // it does not retroactively shrink, then smooth only new text.
+      this.revealAllToFull();
+    }
+  }
+
+  /** Lazily create the pacer and (re)start the frame loop while streaming. */
+  private ensurePacer(): void {
+    if (this._smoothing === null || this._batching || this.streamingState === null) return;
+    this.pacer ??= new FrameScheduler((dtMs) => this.onPacerFrame(dtMs));
+    this.pacer.ensureRunning();
+  }
+
+  /** Stop the frame loop and clear paced state (used on terminal events). */
+  private stopPacer(): void {
+    this.pacer?.stop();
+    this.revealState.clear();
+    this._displayMessages = null;
+    this._displayDirty = true;
+  }
+
+  /**
+   * One pacer frame: advance revealed text toward what has been received and
+   * repaint. Returns whether the loop should keep running (backlog remains).
+   */
+  private onPacerFrame(dtMs: number): boolean {
+    if (this._smoothing === null || this.streamingState === null) return false;
+    const { changed, backlog } = this.advanceReveal(dtMs);
+    if (changed) this.notifyListeners();
+    return backlog;
+  }
+
+  /**
+   * Advance the revealed length of every streaming text/reasoning part toward
+   * its full length. Returns whether anything changed and whether a backlog
+   * remains (so the pacer knows whether to keep running).
+   */
+  private advanceReveal(dtMs: number): { changed: boolean; backlog: boolean } {
+    const smoothing = this._smoothing;
+    const state = this.streamingState;
+    if (smoothing === null || state === null) return { changed: false, backlog: false };
+    const message = this._messages.find((m) => m.id === state.messageId);
+    if (!message) return { changed: false, backlog: false };
+
+    let changed = false;
+    let backlog = false;
+    const visit = (part: UIMessagePart, key: string): void => {
+      if (part.type === 'text' || part.type === 'reasoning') {
+        const full = part.text.length;
+        const current = Math.min(this.revealState.get(key) ?? 0, full);
+        if (current < full) {
+          const next = computeReveal(current, part.text, dtMs, smoothing);
+          this.revealState.set(key, next);
+          if (next !== current) changed = true;
+          if (next < full) backlog = true;
+        }
+      } else if (part.type === 'worker') {
+        part.parts.forEach((child, j) => visit(child, `${key}.${j}`));
+      }
+    };
+    message.parts.forEach((part, i) => visit(part, `${i}`));
+    return { changed, backlog };
+  }
+
+  /**
+   * Mark all current streaming text/reasoning as fully revealed. Used after a
+   * late-join replay paints the caught-up turn in one shot (so it is not typed
+   * out) and when smoothing is enabled mid-stream.
+   */
+  private revealAllToFull(): void {
+    const state = this.streamingState;
+    if (state === null) return;
+    const message = this._messages.find((m) => m.id === state.messageId);
+    if (!message) return;
+    const visit = (part: UIMessagePart, key: string): void => {
+      if (part.type === 'text' || part.type === 'reasoning') {
+        this.revealState.set(key, part.text.length);
+      } else if (part.type === 'worker') {
+        part.parts.forEach((child, j) => visit(child, `${key}.${j}`));
+      }
+    };
+    message.parts.forEach((part, i) => visit(part, `${i}`));
+    this._displayDirty = true;
+  }
+
+  /**
+   * Build the smoothed view of `_messages`: the streaming message's text and
+   * reasoning parts are sliced to their revealed length; everything else is
+   * untouched. Returns the underlying array unchanged when nothing is held
+   * back, keeping the snapshot reference stable for useSyncExternalStore.
+   */
+  private computeDisplayMessages(): UIMessage[] {
+    const state = this.streamingState;
+    if (state === null) return this._messages;
+    const index = this._messages.findIndex((m) => m.id === state.messageId);
+    if (index < 0) return this._messages;
+
+    let anyHeldBack = false;
+    const reveal = (part: UIMessagePart, key: string): UIMessagePart => {
+      if (part.type === 'text' || part.type === 'reasoning') {
+        const full = part.text.length;
+        const revealed = Math.min(this.revealState.get(key) ?? 0, full);
+        if (revealed >= full) return part;
+        anyHeldBack = true;
+        return { ...part, text: part.text.slice(0, revealed), status: 'streaming' };
+      }
+      if (part.type === 'worker') {
+        let childChanged = false;
+        const children = part.parts.map((child, j) => {
+          const next = reveal(child, `${key}.${j}`);
+          if (next !== child) childChanged = true;
+          return next;
+        });
+        return childChanged ? { ...part, parts: children } : part;
+      }
+      return part;
+    };
+
+    const message = this._messages[index]!;
+    const parts = message.parts.map((part, i) => reveal(part, `${i}`));
+    if (!anyHeldBack) return this._messages;
+
+    const out = [...this._messages];
+    out[index] = { ...message, parts };
+    return out;
   }
 
   // =========================================================================
@@ -617,7 +804,15 @@ export class OctavusChat {
   // =========================================================================
 
   get messages(): UIMessage[] {
-    return this._messages;
+    // Fast path: smoothing off, or nothing streaming - expose the true messages.
+    if (this._smoothing === null || this.streamingState === null) {
+      return this._messages;
+    }
+    if (this._displayDirty || this._displayMessages === null) {
+      this._displayMessages = this.computeDisplayMessages();
+      this._displayDirty = false;
+    }
+    return this._displayMessages;
   }
 
   get status(): ChatStatus {
@@ -697,6 +892,9 @@ export class OctavusChat {
   }
 
   private notifyListeners(): void {
+    // Invalidate the memoized smoothed snapshot so the next `messages` read
+    // reflects the latest revealed text (or full text once smoothing is off).
+    this._displayDirty = true;
     this.listeners.forEach((l) => l());
   }
 
@@ -902,6 +1100,8 @@ export class OctavusChat {
     this.streamingState = createEmptyStreamingState();
     this._batching = false;
     this._replayResetPending = false;
+    this.revealState.clear();
+    this._displayMessages = null;
 
     // Clear any previous client tool state
     this._pendingToolsByName.clear();
@@ -956,6 +1156,7 @@ export class OctavusChat {
       ) {
         this.commitInterruptedTurn();
         this.streamingState = null;
+        this.stopPacer();
         this.setStatus('idle');
       }
     } catch (err) {
@@ -974,9 +1175,10 @@ export class OctavusChat {
 
       this.commitInterruptedTurn();
 
+      this.streamingState = null;
+      this.stopPacer();
       this.setError(errorObj);
       this.setStatus('error');
-      this.streamingState = null;
       this._pendingClientToolContinuations = 0;
       this.options.onError?.(errorObj);
     }
@@ -1143,6 +1345,7 @@ export class OctavusChat {
     }
 
     this.streamingState = null;
+    this.stopPacer();
     this.setStatus('idle');
     this.options.onStop?.();
   }
@@ -2018,6 +2221,9 @@ export class OctavusChat {
           this._finishEventReceived = true;
           // Don't finalize message - we're waiting for client tools
           if (this._pendingToolsByCallId.size > 0) {
+            // Reveal any paced text in full before pausing for user input, so
+            // the message is fully shown while the tool UI is up.
+            if (this._smoothing !== null) this.revealAllToFull();
             this.setStatus('awaiting-input');
           } else if (this._readyToContinue) {
             // Automatic tools completed before finish event arrived - continue now
@@ -2060,8 +2266,11 @@ export class OctavusChat {
         }
 
         this.setError(null);
-        this.setStatus('idle');
         this.streamingState = null;
+        // Flush the pacer so completion shows the full text at once - the final
+        // notify (below) reads the true messages, never a paced snapshot.
+        this.stopPacer();
+        this.setStatus('idle');
         this.options.onFinish?.();
         break;
       }
@@ -2133,6 +2342,7 @@ export class OctavusChat {
       }
     }
     this.streamingState = createEmptyStreamingState();
+    this.revealState.clear();
   }
 
   /**
@@ -2154,6 +2364,7 @@ export class OctavusChat {
       }
     }
     this.streamingState = createEmptyStreamingState();
+    this.revealState.clear();
     if (!this._batching) this.notifyListeners();
   }
 
@@ -2166,6 +2377,9 @@ export class OctavusChat {
     if (!this._batching) return;
     this._batching = false;
     this._replayResetPending = false;
+    // The caught-up turn is painted in one shot - show it fully rather than
+    // typing it out. Live text that arrives after this is smoothed as usual.
+    if (this._smoothing !== null) this.revealAllToFull();
     this.notifyListeners();
   }
 
@@ -2189,6 +2403,9 @@ export class OctavusChat {
     if (!this._batching) {
       this.notifyListeners();
     }
+    // Kick the render pacer so newly received text is revealed smoothly. No-op
+    // when smoothing is off, during replay, or when not streaming.
+    this.ensurePacer();
   }
 
   /**
@@ -2299,6 +2516,7 @@ export class OctavusChat {
       ) {
         this.commitInterruptedTurn();
         this.streamingState = null;
+        this.stopPacer();
         this.setStatus('idle');
       }
     } catch (err) {
@@ -2313,9 +2531,10 @@ export class OctavusChat {
             cause: err,
           });
 
+      this.streamingState = null;
+      this.stopPacer();
       this.setError(errorObj);
       this.setStatus('error');
-      this.streamingState = null;
       this._pendingClientToolContinuations = 0;
       this.options.onError?.(errorObj);
     }
