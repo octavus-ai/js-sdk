@@ -141,7 +141,7 @@ types:
 
 ## Enums
 
-Restrict string values to a specific set:
+Restrict string values to a specific set. Enums can appear on a property inside an object type, or on a standalone [top-level scalar type](#top-level-scalar-types).
 
 ```yaml
 types:
@@ -155,6 +155,27 @@ types:
       type: string
       enum: [credit_card, paypal, bank_transfer]
 ```
+
+### Standalone Enum Types
+
+Define an enum once as a top-level scalar type and reference it wherever a type is accepted - most usefully on a tool parameter, so the allowed set lives in the schema (steering the model and rejecting invalid values) without wrapping the value in an object:
+
+```yaml
+types:
+  ThermostatMode:
+    type: string
+    enum: [heat, cool, auto, off]
+    description: The thermostat operating mode
+
+tools:
+  set-thermostat-mode:
+    description: Set the thermostat operating mode
+    parameters:
+      mode:
+        type: ThermostatMode
+```
+
+The LLM calls this with the flat shape `{ mode: "cool" }`, and the value is validated against the enum before it reaches your backend.
 
 ## Arrays
 
@@ -232,6 +253,44 @@ types:
 ```
 
 > **Note:** Array length constraints (`minItems`, `maxItems`) are not enforced by LLM providers in structured output. Use descriptive prompts to guide the model.
+
+## Top-Level Scalar Types
+
+Define a named type that IS a scalar (`string`, `number`, `integer`, or `boolean`), optionally constrained with `enum` or `const`. Like [top-level array types](#top-level-array-types), this lets you pass a scalar as a tool parameter without wrapping it in an object - and reuse the same definition across tools, inputs, variables, and object-property references.
+
+```yaml
+types:
+  # Named enum - the type IS a constrained string
+  Priority:
+    type: string
+    enum: [low, medium, high, urgent]
+    description: Task priority level
+
+  # Named scalar alias - a documented string
+  EmailAddress:
+    type: string
+    description: A validated email address
+
+tools:
+  create-ticket:
+    description: Create a support ticket
+    parameters:
+      priority:
+        type: Priority
+      reporter:
+        type: EmailAddress
+```
+
+Scalar types support the same `enum` and `const` fields as object properties:
+
+| Field         | Description                                  |
+| ------------- | -------------------------------------------- |
+| `type`        | `string`, `number`, `integer`, or `boolean`  |
+| `description` | Human-readable description (sent to the LLM) |
+| `enum`        | List of allowed string values                |
+| `const`       | Fixed literal value                          |
+
+> **Note:** A top-level scalar type cannot be used directly as a `responseType` (the root of a structured-output response must be an object). Wrap it in an object type.
 
 ## Type References
 
@@ -705,12 +764,14 @@ Types are validated when the protocol is loaded:
 
 - **Tool parameters are always objects** - Each tool call is `{ param1: value1, param2: value2, ... }`
 - **Array parameters need named types** - Use top-level array types for array parameters
+- **Enum parameters need named types** - Use a [top-level scalar type](#top-level-scalar-types) with `enum` for enum-constrained parameters
 
 ### Structured Output Limitations
 
 - **responseType must be an object type** - Only object types can be used as responseType
 - **Discriminated unions need object wrapper** - Unions (`anyOf`) are not allowed at the schema root
 - **Array types need object wrapper** - Arrays cannot be used directly as responseType
+- **Scalar types need object wrapper** - Named scalar/enum types cannot be used directly as responseType
 - **Primitives are not allowed** - `string`, `number`, etc. cannot be used as responseType
 
 These limitations exist because LLM providers (OpenAI, Anthropic) require the root schema to be an object:

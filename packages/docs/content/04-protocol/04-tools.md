@@ -90,7 +90,7 @@ Tool calls are always objects where each parameter name maps to a value. The LLM
 | `description` | No       | Describes what this parameter is for                                             |
 | `optional`    | No       | If true, parameter is not required (default: false)                              |
 
-> **Tip**: You can use [custom types](/docs/protocol/types) for complex parameters like `type: ProductFilter` or `type: SearchOptions`.
+> **Tip**: You can use [custom types](/docs/protocol/types) for complex parameters like `type: ProductFilter`, a [top-level array type](/docs/protocol/types#top-level-array-types) for lists, or a [top-level scalar type](/docs/protocol/types#top-level-scalar-types) with `enum` to constrain a parameter to a fixed set of values.
 
 ### Array Parameters
 
@@ -119,6 +119,27 @@ tools:
 ```
 
 The tool receives: `{ items: [{ productId: "...", quantity: 1 }, ...] }`
+
+### Enum Parameters
+
+To constrain a parameter to a fixed set of values, define a [top-level scalar type](/docs/protocol/types#top-level-scalar-types) with `enum` and use it. This keeps the allowed set in the schema - steering the model and rejecting invalid values - while the call stays flat:
+
+```yaml
+types:
+  ThermostatMode:
+    type: string
+    enum: [heat, cool, auto, off]
+
+tools:
+  set-thermostat-mode:
+    description: Set the thermostat operating mode
+    parameters:
+      mode:
+        type: ThermostatMode
+        description: The operating mode to switch to
+```
+
+The tool receives: `{ mode: "cool" }`.
 
 ### Optional Parameters
 
@@ -309,13 +330,20 @@ tools:
     description: Gets some data
 ```
 
-### 2. Document Constrained Values
+### 2. Constrain Values in the Schema
+
+Prefer a named [enum type](/docs/protocol/types#top-level-scalar-types) over describing the allowed values in prose - the schema then steers the model and rejects invalid values, instead of relying on the description alone:
 
 ```yaml
+types:
+  TicketPriority:
+    type: string
+    enum: [low, medium, high, urgent]
+    description: Ticket priority level
+
 tools:
   create-support-ticket:
     parameters:
       priority:
-        type: string
-        description: Ticket priority level (low, medium, high, urgent)
+        type: TicketPriority
 ```
