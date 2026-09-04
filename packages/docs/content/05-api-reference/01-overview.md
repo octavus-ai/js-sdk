@@ -15,12 +15,14 @@ https://octavus.ai
 
 ## Authentication
 
-All API requests require authentication using a Bearer token:
+Most API requests require authentication using a Bearer token:
 
 ```bash
 curl -H "Authorization: Bearer YOUR_API_KEY" \
   https://octavus.ai/api/agents
 ```
+
+The public [Models](/docs/api-reference/models) catalog is the exception - it needs no authentication.
 
 API keys can be created in the Octavus Platform under your project's **API Keys** page.
 
@@ -124,6 +126,12 @@ All responses are JSON. Success responses return the data directly (not wrapped 
 | POST   | `/api/tokens/revoke` | Revoke a minted token before it expires    |
 
 See [Authentication](/docs/authentication/overview) for scoping, lifetimes, and federation.
+
+### Models
+
+| Method | Endpoint      | Description                                       |
+| ------ | ------------- | ------------------------------------------------- |
+| GET    | `/api/models` | List usable models with pricing (public, no auth) |
 
 ## Streaming
 
