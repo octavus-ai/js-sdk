@@ -68,6 +68,15 @@ await client.workforce.followUp(agentId, threadId, 'Now turn that into a slide d
 const thread = await client.workforce.waitForCompletion(agentId, threadId);
 ```
 
+## Cancel a run
+
+Stop an in-flight run - the programmatic equivalent of the dashboard Stop button. Use it to enforce your own time or cost budget: cancel a run that has taken too long instead of letting it continue. It is idempotent, so a thread that has already finished is left unchanged.
+
+```ts
+await client.workforce.cancel(agentId, threadId);
+const thread = await client.workforce.getThread(agentId, threadId); // status: 'cancelled'
+```
+
 ## Configure a run
 
 `dispatch()` and `run()` accept a `config` to set the model, backup model, thinking effort, capability toggles, and recording for the run - the same shape the [Agent CLI](/docs/workforce-agents/cli) accepts. Set it when starting a thread; a thread's run config is fixed at creation, so `followUp()` takes no config. Omitted fields inherit the agent's stored configuration, and the server validates it before the run starts (an unrunnable model or an undeclared capability is rejected up front).

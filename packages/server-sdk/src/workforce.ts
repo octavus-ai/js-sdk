@@ -211,8 +211,8 @@ const DEFAULT_TIMEOUT_MS = 15 * 60 * 1_000;
  * ```
  *
  * The key only authorizes its own agent: `dispatch` starts a thread, `getThread`
- * reads status + messages, `followUp` continues a thread, and `run` does the
- * whole create-wait-return cycle.
+ * reads status + messages, `followUp` continues a thread, `cancel` stops an
+ * in-flight run, and `run` does the whole create-wait-return cycle.
  */
 export class WorkforceApi extends BaseApiClient {
   /** Start a new thread and dispatch the first message. Returns immediately. */
@@ -250,6 +250,22 @@ export class WorkforceApi extends BaseApiClient {
     return await this.httpPost(
       `/api/v1/workforce/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/messages`,
       { message, files: options.files },
+      dispatchResponseSchema,
+    );
+  }
+
+  /**
+   * Cancel a thread's in-flight run - the programmatic equivalent of the
+   * dashboard Stop button. Signals the executor to abort so a run that has blown
+   * its budget stops instead of running on unattended. Idempotent: a thread that
+   * is already terminal (or never started) is left untouched. Returns the settled
+   * status (`cancelled` once the run was in flight); the final state is readable
+   * with `getThread`.
+   */
+  async cancel(agentId: string, threadId: string): Promise<WorkforceDispatchResult> {
+    return await this.httpPost(
+      `/api/v1/workforce/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(threadId)}/cancel`,
+      {},
       dispatchResponseSchema,
     );
   }
