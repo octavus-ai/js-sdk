@@ -181,6 +181,34 @@ curl -X POST https://octavus.ai/api/v1/workforce/agents/AGENT_ID/threads/THREAD_
   -d '{ "message": "Now turn that into a slide deck" }'
 ```
 
+## Cancel a thread's run
+
+Stop a thread's in-flight run - the programmatic equivalent of the dashboard Stop button. The executor is signaled to abort, so a run that has overrun stops instead of continuing to bill. Idempotent: a thread that has already finished (or never started) is left as-is.
+
+```
+POST /api/v1/workforce/agents/{agentId}/threads/{threadId}/cancel
+```
+
+### Response
+
+Returns `200`.
+
+```json
+{
+  "threadId": "cm5xyz123abc456def",
+  "status": "cancelled"
+}
+```
+
+`status` is `cancelled` once the run was in flight, or the thread's unchanged status when it had already finished. The executor abort completes shortly after; poll [Get a thread](#get-a-thread) for the settled state.
+
+### Example
+
+```bash
+curl -X POST https://octavus.ai/api/v1/workforce/agents/AGENT_ID/threads/THREAD_ID/cancel \
+  -H "Authorization: Bearer oct_agt_..."
+```
+
 ## Errors
 
 Errors return `{ "error": string, "code": string }` with an HTTP status:
