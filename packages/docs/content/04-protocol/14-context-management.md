@@ -31,12 +31,13 @@ agent:
 
 `maxToolOutputTokens` is a top-level `agent` field (a sibling of `model` and `system`), because bounding a single tool result is independent of history compaction. Workers set the same cap per thread on their [`start-thread`](/docs/protocol/workers) block. `contextManagement` groups the compaction knobs:
 
-| Field              | Required | Description                                                                                                          |
-| ------------------ | -------- | -------------------------------------------------------------------------------------------------------------------- |
-| `summarizerWorker` | No       | Slug of a worker (declared in `workers:`) that produces the running summary. Enables summarization-based compaction. |
-| `thresholdPercent` | No       | Fraction of the model's context window at which compaction starts. No default; omit to disable proactive compaction. |
-| `recentPercent`    | No       | Fraction of the context window kept verbatim as the recent window. No default; omit to disable summarization.        |
-| `recentWindow`     | No       | Deprecated and ignored. Superseded by `recentPercent` (a context-window fraction).                                   |
+| Field              | Required | Description                                                                                                                                                                                                             |
+| ------------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `summarizerWorker` | No       | Slug of a worker (declared in `workers:`) that produces the running summary. Enables summarization-based compaction.                                                                                                    |
+| `thresholdPercent` | No       | Fraction of the model's context window at which compaction starts. No default; omit to disable proactive compaction.                                                                                                    |
+| `recentPercent`    | No       | Fraction of the context window kept verbatim as the recent window. No default; omit to disable summarization.                                                                                                           |
+| `recentWindow`     | No       | Deprecated and ignored. Superseded by `recentPercent` (a context-window fraction).                                                                                                                                      |
+| `input`            | No       | Values bound into the summarizer worker's inputs, resolved from the agent's scope - the same rules as [`workers.<slug>.input`](/docs/protocol/workers#input-binding). Typically used to choose what compaction runs on. |
 
 ## How it works
 
@@ -56,13 +57,38 @@ Bounding is never hidden: each time a tool result first crosses the budget, a `t
 
 ## The summarizer worker
 
-`summarizerWorker` points at a worker you define and ship like any other (see [Workers](/docs/protocol/workers)). It takes two inputs - `PREVIOUS_SUMMARY` (the running summary so far) and `CONVERSATION` (the older turns to fold in) - and returns the updated summary.
+`summarizerWorker` points at a worker you define and ship like any other (see [Workers](/docs/protocol/workers)). The runtime always supplies it two inputs - `PREVIOUS_SUMMARY` (the running summary so far) and `CONVERSATION` (the older turns to fold in) - and it returns the updated summary. A summarizer may also declare inputs of its own - most commonly a `MODEL` to summarize on - which you bind from the agent's scope with [`contextManagement.input`](#choosing-what-compaction-runs-on).
 
 Summarization is gated on its sizing knobs: a worker only runs if you also set `recentPercent` (the recent window it folds around), and it only runs **proactively** if you also set `thresholdPercent`. Set a worker without `recentPercent` and it never runs - validation warns you about this.
 
 Declare it in the top-level `workers:` section so it can be resolved, but keep it **out** of `agent.workers`: that list is what the model can call as a tool, and the summarizer is invoked automatically, never chosen by the model.
 
 Without a `summarizerWorker`, the agent still recovers from a context overflow by reducing older tool results, but it won't produce a summary of earlier turns.
+
+## Choosing what compaction runs on
+
+The summarizer is invoked by the runtime, not the model, so the agent supplies any inputs its worker declares beyond `PREVIOUS_SUMMARY` and `CONVERSATION` through `contextManagement.input`, resolved from the agent's own scope - exactly like [`workers.<slug>.input`](/docs/protocol/workers#input-binding). An `UPPER_SNAKE` name that exists in the agent's scope resolves to that value; anything else is a literal.
+
+The common use is deciding which model compaction runs on. Declare `MODEL` (and optionally `BACKUP_MODEL` / `THINKING`) on your summarizer worker, wire them into its `start-thread`, then bind them from the agent:
+
+```yaml
+workers:
+  context-summarizer:
+    description: Summarizes earlier conversation to free up context
+    display: description
+
+agent:
+  model: MODEL
+  contextManagement:
+    summarizerWorker: context-summarizer
+    thresholdPercent: 0.8
+    recentPercent: 0.3
+    input:
+      MODEL: MODEL # summarize on the agent's own model
+      # or a literal model id to pin a specific (e.g. cheaper) model for compaction
+```
+
+`PREVIOUS_SUMMARY` and `CONVERSATION` are always supplied by the runtime and cannot be overridden by a binding. With nothing bound, the summarizer runs on whatever its own input defaults declare.
 
 ## What users see
 
