@@ -556,6 +556,43 @@ workers:
 
 When the worker calls its `search` tool, your `web-search` handler executes.
 
+### Input Binding
+
+By default, when a worker is invoked agentically (the LLM calls it as a tool), every field in the worker's `input:` schema becomes a tool parameter the model fills in. The `workers.<slug>.input` map lets the interactive agent bind chosen worker inputs deterministically from its own scope instead, so the model never sees them:
+
+```yaml
+input:
+  MODEL:
+    type: string
+    optional: true
+    default: anthropic/claude-sonnet-4-5
+  LOCALE:
+    type: string
+    optional: true
+    default: en-US
+
+workers:
+  deep-research:
+    description: Delegate a research task and get back a structured brief
+    display: stream
+    input:
+      MODEL: MODEL # worker input ← parent's MODEL
+      LOCALE: LOCALE # worker input ← parent's LOCALE
+```
+
+This is the agentic-path counterpart of the `run-worker` block's `input:` mapping shown above, and follows the same right-hand-side rules:
+
+- An UPPER_SNAKE name that exists in the parent's scope (session input, variables, or resources) resolves to that value.
+- Anything else is treated as a literal, so you can pin a constant the model should not choose (e.g. `RESPONSE_FORMAT: markdown`).
+
+A bound input is:
+
+- **Removed from the LLM tool schema** - the model can neither set it nor forget it. Unbound inputs stay normal tool parameters with their original required/optional status.
+- **Server-authoritative** - the bound value always wins, even if the model somehow emits the key.
+- **Merged then validated** - the resolved bindings are merged over the model's arguments and validated against the worker's full `input:` schema.
+
+Use it to fix per-call values the parent controls rather than the model - a model and reasoning effort so a delegated sub-agent runs on the same model as its parent, a locale, a tenant id, or any other input that should come from the parent's scope, not the task.
+
 ## Next Steps
 
 - [Server SDK Workers](/docs/server-sdk/workers) - Executing workers from code
